@@ -4,8 +4,8 @@
 
 export const LOBE_CHAT_CLOUD = 'LobeHub Cloud';
 
-export const BRANDING_NAME = 'LobeHub';
-export const BRANDING_LOGO_URL = '';
+export const BRANDING_NAME = 'FunChat';
+export const BRANDING_LOGO_URL = 'https://cdn.funtui.com/logo.png';
 
 export const ORG_NAME = 'LobeHub';
 
