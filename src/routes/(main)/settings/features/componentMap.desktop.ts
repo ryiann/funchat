@@ -6,8 +6,10 @@ import Usage from '@/business/client/BusinessSettingPages/Usage';
 import { SettingsTabs } from '@/store/global/initialState';
 
 import About from '../about';
+import Advanced from '../advanced';
 import Agent from '../agent';
 import APIKey from '../apikey';
+import Beta from '../beta';
 import ChatAppearance from '../chat-appearance';
 import Common from '../common';
 import Hotkey from '../hotkey';
@@ -24,6 +26,8 @@ import SystemTools from '../system-tools';
 import TTS from '../tts';
 
 export const componentMap = {
+  [SettingsTabs.Advanced]: Advanced,
+  [SettingsTabs.Beta]: Beta,
   [SettingsTabs.Common]: Common,
   [SettingsTabs.ChatAppearance]: ChatAppearance,
   [SettingsTabs.Provider]: Provider,
