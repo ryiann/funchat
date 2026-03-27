@@ -71,6 +71,10 @@ export interface ChatInputProps {
    */
   sendMenu?: MenuProps;
   /**
+   * Whether to show the runtime config bar (Local/Cloud/Auto Approve)
+   */
+  showRuntimeConfig?: boolean;
+  /**
    * Remove a small margin when placed adjacent to the ChatList
    */
   skipScrollMarginWithList?: boolean;
@@ -96,6 +100,7 @@ const ChatInput = memo<ChatInputProps>(
     sendAreaPrefix,
     sendButtonProps: customSendButtonProps,
     onEditorReady,
+    showRuntimeConfig,
     skipScrollMarginWithList,
   }) => {
     const { t } = useTranslation('chat');
@@ -128,7 +133,7 @@ const ChatInput = memo<ChatInputProps>(
 
     // Send handler - gets message, clears editor immediately, then sends
     const handleSend: SendButtonHandler = useCallback(
-      async ({ clearContent, getMarkdownContent }) => {
+      async ({ clearContent, getMarkdownContent, getEditorData }) => {
         // Get instant values from stores at trigger time
         const fileStore = useFileStore.getState();
         const currentFileList = fileChatSelectors.chatUploadFileList(fileStore);
@@ -141,6 +146,9 @@ const ChatInput = memo<ChatInputProps>(
         const message = getMarkdownContent();
         if (!message.trim() && currentFileList.length === 0 && currentContextList.length === 0)
           return;
+
+        // Capture editor JSON state before clearing for rich text rendering
+        const editorData = getEditorData();
 
         // Clear content immediately for responsive UX
         clearContent();
@@ -156,7 +164,7 @@ const ChatInput = memo<ChatInputProps>(
         }));
 
         // Fire and forget - send with captured message
-        await sendMessage({ files: currentFileList, message, pageSelections });
+        await sendMessage({ editorData, files: currentFileList, message, pageSelections });
       },
       [isInputLoading, sendMessage],
     );
@@ -186,6 +194,7 @@ const ChatInput = memo<ChatInputProps>(
           extraActionItems={extraActionItems}
           leftContent={leftContent}
           sendAreaPrefix={sendAreaPrefix}
+          showRuntimeConfig={showRuntimeConfig}
         />
       </WideScreenContainer>
     );
@@ -199,6 +208,7 @@ const ChatInput = memo<ChatInputProps>(
         rightActions={rightActions}
         sendButtonProps={sendButtonProps}
         sendMenu={sendMenu}
+        slashPlacement="top"
         chatInputEditorRef={(instance) => {
           if (instance) {
             setEditor(instance);

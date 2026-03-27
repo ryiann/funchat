@@ -102,18 +102,19 @@ export class GeneralChatAgent implements Agent {
     config: ExtendedHumanInterventionConfig | undefined,
     toolArgs: Record<string, any>,
     metadata?: Record<string, any>,
-  ): HumanInterventionPolicy | undefined {
+  ): Promise<HumanInterventionPolicy | undefined> {
     if (!this.isDynamicInterventionConfig(config)) {
-      return undefined;
+      return Promise.resolve(undefined);
     }
 
     const { dynamic } = config;
     const resolver = this.config.dynamicInterventionAudits?.[dynamic.type];
 
-    if (!resolver) return dynamic.default ?? 'never';
+    if (!resolver) return Promise.resolve(dynamic.default ?? 'never');
 
-    const shouldIntervene = resolver(toolArgs, metadata);
-    return shouldIntervene ? (dynamic.policy ?? 'always') : (dynamic.default ?? 'never');
+    return Promise.resolve(resolver(toolArgs, metadata)).then((shouldIntervene) =>
+      shouldIntervene ? (dynamic.policy ?? 'always') : (dynamic.default ?? 'never'),
+    );
   }
 
   /**
@@ -121,10 +122,10 @@ export class GeneralChatAgent implements Agent {
    * Combines user's global config with tool's own config
    * Returns [toolsNeedingIntervention, toolsToExecute]
    */
-  private checkInterventionNeeded(
+  private async checkInterventionNeeded(
     toolsCalling: ChatToolPayload[],
     state: AgentState,
-  ): [ChatToolPayload[], ChatToolPayload[]] {
+  ): Promise<[ChatToolPayload[], ChatToolPayload[]]> {
     const toolsNeedingIntervention: ChatToolPayload[] = [];
     const toolsToExecute: ChatToolPayload[] = [];
 
@@ -158,7 +159,7 @@ export class GeneralChatAgent implements Agent {
       let globalPolicy: HumanInterventionPolicy = 'always';
 
       for (const globalResolver of globalResolvers) {
-        if (globalResolver.resolver(toolArgs, resolverMetadata)) {
+        if (await globalResolver.resolver(toolArgs, resolverMetadata)) {
           globalBlocked = true;
           globalPolicy = globalResolver.policy ?? 'always';
           break;
@@ -185,7 +186,7 @@ export class GeneralChatAgent implements Agent {
       // Phase 3: Per-tool dynamic resolver
       const config = this.getToolInterventionConfig(toolCalling, state);
       const isDynamicConfig = this.isDynamicInterventionConfig(config);
-      const dynamicPolicy = this.resolveDynamicPolicy(config, toolArgs, state.metadata);
+      const dynamicPolicy = await this.resolveDynamicPolicy(config, toolArgs, state.metadata);
       const staticConfig = isDynamicConfig
         ? undefined
         : (config as HumanInterventionConfig | undefined);
@@ -311,6 +312,36 @@ export class GeneralChatAgent implements Agent {
   }
 
   /**
+   * Proceed to the next LLM call, inserting compression first when needed.
+   */
+  private toLLMCall(payload: GeneralAgentCallLLMInstructionPayload): AgentInstruction {
+    const compressionEnabled = this.config.compressionConfig?.enabled ?? true;
+
+    if (compressionEnabled) {
+      const messages = payload.messages;
+      const compressionCheck = shouldCompress(messages, {
+        maxWindowToken: this.config.compressionConfig?.maxWindowToken,
+      });
+
+      if (compressionCheck.needsCompression) {
+        return {
+          payload: {
+            currentTokenCount: compressionCheck.currentTokenCount,
+            existingSummary: this.findExistingSummary(messages),
+            messages,
+          },
+          type: 'compress_context',
+        };
+      }
+    }
+
+    return {
+      payload,
+      type: 'call_llm',
+    };
+  }
+
+  /**
    * Handle abort scenario - unified abort handling logic
    */
   private handleAbort(
@@ -390,7 +421,7 @@ export class GeneralChatAgent implements Agent {
 
         if (hasToolsCalling && toolsCalling && toolsCalling.length > 0) {
           // Check which tools need human intervention
-          const [toolsNeedingIntervention, toolsToExecute] = this.checkInterventionNeeded(
+          const [toolsNeedingIntervention, toolsToExecute] = await this.checkInterventionNeeded(
             toolsCalling,
             state,
           );
@@ -517,16 +548,13 @@ export class GeneralChatAgent implements Agent {
         }
 
         // No pending tools, continue to call LLM with tool results
-        return {
-          payload: {
-            messages: state.messages,
-            model: this.config.modelRuntimeConfig?.model,
-            parentMessageId,
-            provider: this.config.modelRuntimeConfig?.provider,
-            tools: state.tools,
-          } as GeneralAgentCallLLMInstructionPayload,
-          type: 'call_llm',
-        };
+        return this.toLLMCall({
+          messages: state.messages,
+          model: this.config.modelRuntimeConfig?.model,
+          parentMessageId,
+          provider: this.config.modelRuntimeConfig?.provider,
+          tools: state.tools,
+        } as GeneralAgentCallLLMInstructionPayload);
       }
 
       case 'tools_batch_result': {
@@ -550,16 +578,13 @@ export class GeneralChatAgent implements Agent {
         }
 
         // No pending tools, continue to call LLM with tool results
-        return {
-          payload: {
-            messages: state.messages,
-            model: this.config.modelRuntimeConfig?.model,
-            parentMessageId,
-            provider: this.config.modelRuntimeConfig?.provider,
-            tools: state.tools,
-          } as GeneralAgentCallLLMInstructionPayload,
-          type: 'call_llm',
-        };
+        return this.toLLMCall({
+          messages: state.messages,
+          model: this.config.modelRuntimeConfig?.model,
+          parentMessageId,
+          provider: this.config.modelRuntimeConfig?.provider,
+          tools: state.tools,
+        } as GeneralAgentCallLLMInstructionPayload);
       }
 
       case 'task_result': {
@@ -567,16 +592,13 @@ export class GeneralChatAgent implements Agent {
         const { parentMessageId } = context.payload as TaskResultPayload;
 
         // Continue to call LLM with updated messages (task message is already in state)
-        return {
-          payload: {
-            messages: state.messages,
-            model: this.config.modelRuntimeConfig?.model,
-            parentMessageId,
-            provider: this.config.modelRuntimeConfig?.provider,
-            tools: state.tools,
-          } as GeneralAgentCallLLMInstructionPayload,
-          type: 'call_llm',
-        };
+        return this.toLLMCall({
+          messages: state.messages,
+          model: this.config.modelRuntimeConfig?.model,
+          parentMessageId,
+          provider: this.config.modelRuntimeConfig?.provider,
+          tools: state.tools,
+        } as GeneralAgentCallLLMInstructionPayload);
       }
 
       case 'tasks_batch_result': {
@@ -596,16 +618,13 @@ export class GeneralChatAgent implements Agent {
         ];
 
         // Continue to call LLM with updated messages (task messages are already in state)
-        return {
-          payload: {
-            messages: messagesWithPrompt,
-            model: this.config.modelRuntimeConfig?.model,
-            parentMessageId,
-            provider: this.config.modelRuntimeConfig?.provider,
-            tools: state.tools,
-          } as GeneralAgentCallLLMInstructionPayload,
-          type: 'call_llm',
-        };
+        return this.toLLMCall({
+          messages: messagesWithPrompt,
+          model: this.config.modelRuntimeConfig?.model,
+          parentMessageId,
+          provider: this.config.modelRuntimeConfig?.provider,
+          tools: state.tools,
+        } as GeneralAgentCallLLMInstructionPayload);
       }
 
       case 'compression_result': {

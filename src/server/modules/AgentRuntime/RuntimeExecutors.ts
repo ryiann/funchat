@@ -1,31 +1,42 @@
 import {
   type AgentEvent,
   type AgentInstruction,
+  type AgentInstructionCompressContext,
   type CallLLMPayload,
   type GeneralAgentCallLLMResultPayload,
+  type GeneralAgentCompressionResultPayload,
   type InstructionExecutor,
   UsageCounter,
 } from '@lobechat/agent-runtime';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import {
+  AGENT_DOCUMENT_INJECTION_POSITIONS,
+  type AgentContextDocument,
+  buildStepSkillDelta,
   buildStepToolDelta,
   type LobeToolManifest,
   type OperationToolSet,
   type ResolvedToolSet,
+  resolveTopicReferences,
+  SkillResolver,
   ToolNameResolver,
   ToolResolver,
 } from '@lobechat/context-engine';
 import { parse } from '@lobechat/conversation-flow';
 import { consumeStreamUntilDone } from '@lobechat/model-runtime';
+import { chainCompressContext } from '@lobechat/prompts';
 import { type ChatToolPayload, type MessageToolCall, type UIChatMessage } from '@lobechat/types';
 import { serializePartsForStorage } from '@lobechat/utils';
 import debug from 'debug';
 
-import { type MessageModel } from '@/database/models/message';
+import { type MessageModel, MessageModel as MessageModelClass } from '@/database/models/message';
+import { TopicModel } from '@/database/models/topic';
 import { type LobeChatDatabase } from '@/database/type';
 import { serverMessagesEngine } from '@/server/modules/Mecha/ContextEngineering';
 import { type EvalContext } from '@/server/modules/Mecha/ContextEngineering/types';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
+import { AgentDocumentsService } from '@/server/services/agentDocuments';
+import { MessageService } from '@/server/services/message';
 import { type ToolExecutionService } from '@/server/services/toolExecution';
 
 import { type IStreamEventManager } from './types';
@@ -33,14 +44,73 @@ import { type IStreamEventManager } from './types';
 const log = debug('lobe-server:agent-runtime:streaming-executors');
 const timing = debug('lobe-server:agent-runtime:timing');
 
+const VALID_DOCUMENT_POSITIONS = new Set<AgentContextDocument['loadPosition']>(
+  AGENT_DOCUMENT_INJECTION_POSITIONS,
+);
+
+const normalizeDocumentPosition = (
+  position: string | null | undefined,
+): AgentContextDocument['loadPosition'] | undefined => {
+  if (!position) return undefined;
+  return VALID_DOCUMENT_POSITIONS.has(position as AgentContextDocument['loadPosition'])
+    ? (position as AgentContextDocument['loadPosition'])
+    : undefined;
+};
+
 // Tool pricing configuration (USD per call)
 const TOOL_PRICING: Record<string, number> = {
   'lobe-web-browsing/craw': 0,
   'lobe-web-browsing/search': 0,
 };
 
+const formatErrorEventData = (error: unknown, phase: string) => {
+  let errorMessage = 'Unknown error';
+  let errorType: string | undefined;
+
+  if (error && typeof error === 'object') {
+    const payload = error as { error?: unknown; errorType?: unknown; message?: unknown };
+
+    if (typeof payload.errorType === 'string') {
+      errorType = payload.errorType;
+    }
+
+    if (typeof payload.message === 'string' && payload.message.length > 0) {
+      errorMessage = payload.message;
+    } else if (typeof payload.error === 'string' && payload.error.length > 0) {
+      errorMessage = payload.error;
+    } else if (
+      payload.error &&
+      typeof payload.error === 'object' &&
+      'message' in payload.error &&
+      typeof payload.error.message === 'string'
+    ) {
+      errorMessage = payload.error.message;
+    } else if (error instanceof Error && error.message.length > 0) {
+      errorMessage = error.message;
+    } else if (errorType) {
+      errorMessage = errorType;
+    }
+  } else if (error instanceof Error && error.message.length > 0) {
+    errorMessage = error.message;
+    errorType = error.name;
+  } else if (typeof error === 'string' && error.length > 0) {
+    errorMessage = error;
+  }
+
+  if (!errorType && error instanceof Error && error.name) {
+    errorType = error.name;
+  }
+
+  return {
+    error: errorMessage,
+    errorType,
+    phase,
+  };
+};
+
 export interface RuntimeExecutorContext {
   agentConfig?: any;
+  botPlatformContext?: any;
   discordContext?: any;
   evalContext?: EvalContext;
   fileService?: any;
@@ -83,6 +153,7 @@ export const createRuntimeExecutors = (
 
     const stepDelta = buildStepToolDelta({
       activeDeviceId,
+      enabledToolIds: operationToolSet.enabledToolIds,
       forceFinish: state.forceFinish,
       localSystemManifest: LocalSystemManifest as unknown as LobeToolManifest,
       operationManifestMap: operationToolSet.manifestMap,
@@ -104,6 +175,17 @@ export const createRuntimeExecutors = (
         stepDelta.activatedTools.map((t) => t.id),
       );
     }
+
+    // Resolve skills via SkillResolver (unified skill injection)
+    const skillResolver = new SkillResolver();
+    const stepSkillDelta = buildStepSkillDelta();
+    const resolvedSkills = state.metadata?.operationSkillSet
+      ? skillResolver.resolve(
+          state.metadata.operationSkillSet,
+          stepSkillDelta,
+          state.activatedStepSkills ?? [],
+        )
+      : undefined;
 
     if (!model || !provider) {
       throw new Error('Model and provider are required for call_llm instruction');
@@ -174,7 +256,62 @@ export const createRuntimeExecutors = (
       if (agentConfig) {
         const { LOBE_DEFAULT_MODEL_LIST } = await import('model-bank');
 
+        // Extract <refer_topic> tags from messages and fetch summaries.
+        // Skip if messages already contain injected topic_reference_context
+        // (e.g., from client-side contextEngineering preprocessing) to avoid double injection.
+        let topicReferences;
+        const alreadyHasTopicRefs = (
+          llmPayload.messages as Array<{ content: string | unknown }>
+        ).some(
+          (m) => typeof m.content === 'string' && m.content.includes('topic_reference_context'),
+        );
+
+        if (!alreadyHasTopicRefs && ctx.serverDB && ctx.userId) {
+          const topicModel = new TopicModel(ctx.serverDB, ctx.userId);
+          const messageModel = new MessageModelClass(ctx.serverDB, ctx.userId);
+          topicReferences = await resolveTopicReferences(
+            llmPayload.messages as Array<{ content: string | unknown }>,
+            async (topicId) => topicModel.findById(topicId),
+            async (topicId) => {
+              const topic = await topicModel.findById(topicId);
+              return messageModel.query({
+                agentId: topic?.agentId ?? undefined,
+                groupId: topic?.groupId ?? undefined,
+                topicId,
+              });
+            },
+          );
+        }
+
+        // Fetch agent documents for context injection
+        let agentDocuments: AgentContextDocument[] | undefined;
+        const agentId = state.metadata?.agentId;
+        if (agentId && ctx.serverDB && ctx.userId) {
+          try {
+            const agentDocService = new AgentDocumentsService(ctx.serverDB, ctx.userId);
+            const docs = await agentDocService.getAgentDocuments(agentId);
+            if (docs.length > 0) {
+              agentDocuments = docs.map((doc) => ({
+                content: doc.content,
+                filename: doc.filename,
+                id: doc.id,
+                loadPosition: normalizeDocumentPosition(
+                  doc.policy?.context?.position || doc.policyLoadPosition,
+                ),
+                loadRules: doc.loadRules,
+                policyId: doc.templateId,
+                policyLoadFormat: doc.policy?.context?.policyLoadFormat || doc.policyLoadFormat,
+                title: doc.title,
+              }));
+              log('Resolved %d agent documents for agent %s', agentDocuments.length, agentId);
+            }
+          } catch (error) {
+            log('Failed to resolve agent documents for agent %s: %O', agentId, error);
+          }
+        }
+
         const contextEngineInput = {
+          agentDocuments,
           additionalVariables: state.metadata?.deviceSystemInfo,
           userTimezone: ctx.userTimezone,
           capabilities: {
@@ -197,6 +334,7 @@ export const createRuntimeExecutors = (
               return info?.abilities?.vision ?? true;
             },
           },
+          botPlatformContext: ctx.botPlatformContext,
           discordContext: ctx.discordContext,
           enableHistoryCount: agentConfig.chatConfig?.enableHistoryCount ?? undefined,
           evalContext: ctx.evalContext,
@@ -226,13 +364,33 @@ export const createRuntimeExecutors = (
             tools: resolved.enabledToolIds,
           },
           userMemory: state.metadata?.userMemory,
+
+          // Skills configuration for <available_skills> injection
+          ...(resolvedSkills?.enabledSkills?.length && {
+            skillsConfig: { enabledSkills: resolvedSkills.enabledSkills },
+          }),
+
+          // Topic reference summaries
+          ...(topicReferences && { topicReferences }),
         };
 
         processedMessages = await serverMessagesEngine(contextEngineInput);
 
-        // Emit context engine event for tracing (captures input params and final LLM messages)
+        // Emit context engine event for tracing
+        // Omit large/redundant fields to reduce snapshot size:
+        // - input.messages: reconstructible from step's messagesBaseline + messagesDelta
+        // - input.toolsConfig: static per operation, ~47KB of manifests repeated every call_llm step
+        // Keep output (processedMessages) — needed by inspect CLI for --env, --system-role, -m
+        const {
+          messages: _inputMsgs,
+          toolsConfig: _toolsConfig,
+          ...contextEngineInputLite
+        } = contextEngineInput;
         events.push({
-          input: contextEngineInput,
+          input: {
+            ...contextEngineInputLite,
+            toolCount: _toolsConfig?.tools?.length ?? 0,
+          },
           output: processedMessages,
           type: 'context_engine_result',
         } as any);
@@ -245,6 +403,7 @@ export const createRuntimeExecutors = (
 
       // Construct ChatStreamPayload
       const stream = ctx.stream ?? true;
+
       const chatPayload = { messages: processedMessages, model, stream, tools };
 
       log(
@@ -401,6 +560,11 @@ export const createRuntimeExecutors = (
             streamError = errorData;
             console.error(`[${operationLogId}][stream_error]`, errorData);
           },
+        },
+        metadata: {
+          operationId,
+          topicId: state.metadata?.topicId,
+          trigger: state.metadata?.trigger,
         },
         user: ctx.userId,
       });
@@ -565,10 +729,7 @@ export const createRuntimeExecutors = (
     } catch (error) {
       // Publish error event
       await streamManager.publishStreamEvent(operationId, {
-        data: {
-          error: (error as Error).message,
-          phase: 'llm_execution',
-        },
+        data: formatErrorEventData(error, 'llm_execution'),
         stepIndex,
         type: 'error',
       });
@@ -578,6 +739,258 @@ export const createRuntimeExecutors = (
         error,
       );
       throw error;
+    }
+  },
+
+  compress_context: async (instruction, state) => {
+    const { payload } = instruction as AgentInstructionCompressContext;
+    const { messages, currentTokenCount } = payload;
+    const { operationId, stepIndex } = ctx;
+    const operationLogId = `${operationId}:${stepIndex}`;
+    const stagePrefix = `[${operationLogId}][compress_context]`;
+    const events: AgentEvent[] = [];
+    const newState = structuredClone(state);
+    const topicId = state.metadata?.topicId;
+    const lastMessage = messages.at(-1);
+    const preservedMessages =
+      messages.length > 1 && lastMessage?.role === 'user' ? [lastMessage] : [];
+    const preservedMessageIds = new Set(
+      preservedMessages.map((message) => message.id).filter((id): id is string => Boolean(id)),
+    );
+    const messagesToCompress = preservedMessages.length > 0 ? messages.slice(0, -1) : messages;
+    const compressedMessagesFallback = [...messagesToCompress, ...preservedMessages];
+
+    if (!topicId || !ctx.userId) {
+      return {
+        events,
+        newState,
+        nextContext: {
+          payload: {
+            compressedMessages: compressedMessagesFallback,
+            groupId: '',
+            parentMessageId: undefined,
+            skipped: true,
+          } as GeneralAgentCompressionResultPayload,
+          phase: 'compression_result',
+          session: {
+            messageCount: newState.messages.length,
+            sessionId: operationId,
+            status: 'running',
+            stepCount: state.stepCount + 1,
+          },
+        },
+      };
+    }
+
+    try {
+      const dbMessages = await ctx.messageModel.query({
+        agentId: state.metadata?.agentId,
+        threadId: state.metadata?.threadId,
+        topicId,
+      });
+
+      const messageIds = dbMessages
+        .filter(
+          (message) =>
+            message.role !== 'compressedGroup' &&
+            Boolean(message.id) &&
+            !preservedMessageIds.has(message.id),
+        )
+        .map((message) => message.id);
+
+      if (messageIds.length === 0 || messagesToCompress.length === 0) {
+        return {
+          events,
+          newState,
+          nextContext: {
+            payload: {
+              compressedMessages: compressedMessagesFallback,
+              groupId: '',
+              parentMessageId: undefined,
+              skipped: true,
+            } as GeneralAgentCompressionResultPayload,
+            phase: 'compression_result',
+            session: {
+              messageCount: newState.messages.length,
+              sessionId: operationId,
+              status: 'running',
+              stepCount: state.stepCount + 1,
+            },
+          },
+        };
+      }
+
+      const latestAssistantMessage = dbMessages.findLast((message) => message.role === 'assistant');
+      const messageService = new MessageService(ctx.serverDB, ctx.userId);
+      const compressionResult = await messageService.createCompressionGroup(topicId, messageIds, {
+        agentId: state.metadata?.agentId,
+        threadId: state.metadata?.threadId,
+        topicId,
+      });
+
+      const compressionModel =
+        newState.modelRuntimeConfig?.compressionModel || newState.modelRuntimeConfig;
+
+      if (!compressionModel?.model || !compressionModel?.provider) {
+        return {
+          events,
+          newState,
+          nextContext: {
+            payload: {
+              compressedMessages: compressedMessagesFallback,
+              groupId: '',
+              parentMessageId: latestAssistantMessage?.id,
+              skipped: true,
+            } as GeneralAgentCompressionResultPayload,
+            phase: 'compression_result',
+            session: {
+              messageCount: newState.messages.length,
+              sessionId: operationId,
+              status: 'running',
+              stepCount: state.stepCount + 1,
+            },
+          },
+        };
+      }
+
+      const compressionPayload = chainCompressContext(compressionResult.messagesToSummarize);
+      const compressionRuntime = await initModelRuntimeFromDB(
+        ctx.serverDB,
+        ctx.userId,
+        compressionModel.provider,
+      );
+
+      let summaryContent = '';
+      let summaryUsage: any;
+      let summaryError: any;
+
+      const compressionResponse = await compressionRuntime.chat(
+        {
+          messages: compressionPayload.messages!,
+          model: compressionModel.model,
+          stream: true,
+        },
+        {
+          callback: {
+            onCompletion: async (data) => {
+              if (data.usage) summaryUsage = data.usage;
+            },
+            onError: async (errorData) => {
+              summaryError = errorData;
+            },
+            onText: async (text) => {
+              summaryContent += text;
+            },
+          },
+          user: ctx.userId,
+        },
+      );
+
+      await consumeStreamUntilDone(compressionResponse);
+
+      if (summaryError) {
+        throw new Error(
+          typeof summaryError.message === 'string'
+            ? summaryError.message
+            : JSON.stringify(summaryError),
+        );
+      }
+
+      const finalCompression = await messageService.finalizeCompression(
+        compressionResult.messageGroupId,
+        summaryContent,
+        {
+          agentId: state.metadata?.agentId,
+          threadId: state.metadata?.threadId,
+          topicId,
+        },
+      );
+
+      const compressedMessagesBase =
+        finalCompression.messages || compressionResult.messagesToSummarize;
+      const compressedMessages = [...compressedMessagesBase];
+
+      for (const preservedMessage of preservedMessages) {
+        if (
+          !compressedMessages.some(
+            (message) =>
+              message === preservedMessage ||
+              (Boolean(message.id) &&
+                Boolean(preservedMessage.id) &&
+                message.id === preservedMessage.id),
+          )
+        ) {
+          compressedMessages.push(preservedMessage);
+        }
+      }
+
+      newState.messages = compressedMessages;
+
+      if (summaryUsage) {
+        const { usage, cost } = UsageCounter.accumulateLLM({
+          cost: newState.cost,
+          model: compressionModel.model,
+          modelUsage: summaryUsage,
+          provider: compressionModel.provider,
+          usage: newState.usage,
+        });
+
+        newState.usage = usage;
+        if (cost) newState.cost = cost;
+      }
+
+      events.push({
+        groupId: compressionResult.messageGroupId,
+        parentMessageId: latestAssistantMessage?.id,
+        type: 'compression_complete',
+      });
+
+      return {
+        events,
+        newState,
+        nextContext: {
+          payload: {
+            compressedMessages,
+            groupId: compressionResult.messageGroupId,
+            parentMessageId: latestAssistantMessage?.id,
+          } as GeneralAgentCompressionResultPayload,
+          phase: 'compression_result',
+          session: {
+            messageCount: compressedMessages.length,
+            sessionId: operationId,
+            status: 'running',
+            stepCount: state.stepCount + 1,
+          },
+        },
+      };
+    } catch (error) {
+      log(
+        `${stagePrefix} Compression failed. originalTokens=%d error=%O`,
+        currentTokenCount,
+        error,
+      );
+
+      events.push({ error, type: 'compression_error' });
+
+      return {
+        events,
+        newState,
+        nextContext: {
+          payload: {
+            compressedMessages: compressedMessagesFallback,
+            groupId: '',
+            parentMessageId: undefined,
+            skipped: true,
+          } as GeneralAgentCompressionResultPayload,
+          phase: 'compression_result',
+          session: {
+            messageCount: newState.messages.length,
+            sessionId: operationId,
+            status: 'running',
+            stepCount: state.stepCount + 1,
+          },
+        },
+      };
     }
   },
   /**
@@ -622,8 +1035,10 @@ export const createRuntimeExecutors = (
       log(`[${operationLogId}] Executing tool ${toolName} ...`);
       const executionResult = await toolExecutionService.executeTool(chatToolPayload, {
         activeDeviceId: state.metadata?.activeDeviceId,
+        agentId: state.metadata?.agentId,
         memoryToolPermission: agentConfig?.chatConfig?.memory?.toolPermission,
         serverDB: ctx.serverDB,
+        taskId: state.metadata?.taskId,
         toolManifestMap: effectiveManifestMap,
         toolResultMaxLength,
         topicId: ctx.topicId,
@@ -656,6 +1071,7 @@ export const createRuntimeExecutors = (
         const toolMessage = await ctx.messageModel.create({
           agentId: state.metadata!.agentId!,
           content: executionResult.content,
+          metadata: { toolExecutionTimeMs: executionTime },
           parentId: payload.parentMessageId,
           plugin: chatToolPayload as any,
           pluginError: executionResult.error,
@@ -771,10 +1187,7 @@ export const createRuntimeExecutors = (
     } catch (error) {
       // Publish tool execution error event
       await streamManager.publishStreamEvent(operationId, {
-        data: {
-          error: (error as Error).message,
-          phase: 'tool_execution',
-        },
+        data: formatErrorEventData(error, 'tool_execution'),
         stepIndex,
         type: 'error',
       });
@@ -840,8 +1253,10 @@ export const createRuntimeExecutors = (
 
           const executionResult = await toolExecutionService.executeTool(chatToolPayload, {
             activeDeviceId: state.metadata?.activeDeviceId,
+            agentId: state.metadata?.agentId,
             memoryToolPermission: batchAgentConfig?.chatConfig?.memory?.toolPermission,
             serverDB: ctx.serverDB,
+            taskId: state.metadata?.taskId,
             toolManifestMap: batchManifestMap,
             toolResultMaxLength: batchAgentConfig?.chatConfig?.toolResultMaxLength,
             topicId: ctx.topicId,
@@ -872,6 +1287,7 @@ export const createRuntimeExecutors = (
             const toolMessage = await ctx.messageModel.create({
               agentId: state.metadata!.agentId!,
               content: executionResult.content,
+              metadata: { toolExecutionTimeMs: executionTime },
               parentId: parentMessageId,
               plugin: chatToolPayload as any,
               pluginError: executionResult.error,
@@ -914,10 +1330,7 @@ export const createRuntimeExecutors = (
 
           // Publish error event
           await streamManager.publishStreamEvent(operationId, {
-            data: {
-              error: (error as Error).message,
-              phase: 'tool_execution',
-            },
+            data: formatErrorEventData(error, 'tool_execution'),
             stepIndex,
             type: 'error',
           });

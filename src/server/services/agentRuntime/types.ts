@@ -1,8 +1,10 @@
 import { type AgentRuntimeContext, type AgentState } from '@lobechat/agent-runtime';
-import { type LobeToolManifest } from '@lobechat/context-engine';
+import type { LobeToolManifest, OperationSkillSet } from '@lobechat/context-engine';
 import { type UserInterventionConfig } from '@lobechat/types';
 
 import { type ServerUserMemoryConfig } from '@/server/modules/Mecha/ContextEngineering/types';
+
+import { type AgentHook } from './hooks/types';
 
 // ==================== Operation Tool Set ====================
 
@@ -133,10 +135,14 @@ export interface OperationCreationParams {
   appContext: {
     agentId?: string;
     groupId?: string | null;
+    taskId?: string;
     threadId?: string | null;
     topicId?: string | null;
+    trigger?: string;
   };
   autoStart?: boolean;
+  /** Bot platform context for injecting platform capabilities (e.g. markdown support) */
+  botPlatformContext?: any;
   /**
    * Completion webhook configuration
    * When set, an HTTP POST will be fired when the operation completes (success or error).
@@ -151,11 +157,20 @@ export interface OperationCreationParams {
   /** Discord context for injecting channel/guild info into agent system message */
   discordContext?: any;
   evalContext?: any;
+  /**
+   * External lifecycle hooks
+   * Registered once, auto-adapt to local (in-memory) or production (webhook) mode
+   */
+  hooks?: AgentHook[];
   initialContext: AgentRuntimeContext;
   initialMessages?: any[];
   maxSteps?: number;
   modelRuntimeConfig?: any;
   operationId: string;
+  /** Operation-level skill set for SkillResolver */
+  operationSkillSet?: OperationSkillSet;
+  /** Abort startup before the first step is scheduled */
+  signal?: AbortSignal;
   /**
    * Step lifecycle callbacks
    * Used to inject custom logic at different stages of step execution
