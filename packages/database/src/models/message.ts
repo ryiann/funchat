@@ -1266,6 +1266,8 @@ export class MessageModel {
         .insert(messages)
         .values({
           ...normalizedMessage,
+          // Sanitize content to strip null bytes that PostgreSQL rejects
+          content: sanitizeNullBytes(normalizedMessage.content),
           // TODO: remove this when the client is updated
           createdAt: createdAt ? new Date(createdAt) : undefined,
           id,
@@ -1421,6 +1423,37 @@ export class MessageModel {
     if (!item) throw new Error('Plugin not found');
 
     return this.db.update(messagePlugins).set(value).where(eq(messagePlugins.id, id));
+  };
+
+  /**
+   * Fetch the `message_plugins` row associated with a tool message. Tool-call
+   * metadata (identifier / apiName / arguments / type / toolCallId /
+   * intervention) lives on this row, not on the `messages` row returned by
+   * {@link findById}.
+   *
+   * Returns `undefined` when the message has no plugin row. Normalizes the
+   * DB row (nullable columns) into the optional-field shape of
+   * {@link MessagePluginItem} so callers don't need to juggle `null` vs
+   * `undefined`.
+   */
+  findMessagePlugin = async (messageId: string): Promise<MessagePluginItem | undefined> => {
+    const row = await this.db.query.messagePlugins.findFirst({
+      where: eq(messagePlugins.id, messageId),
+    });
+    if (!row) return undefined;
+    return {
+      apiName: row.apiName ?? undefined,
+      arguments: row.arguments ?? undefined,
+      clientId: row.clientId ?? undefined,
+      error: row.error ?? undefined,
+      id: row.id,
+      identifier: row.identifier ?? undefined,
+      intervention: row.intervention ?? undefined,
+      state: row.state ?? undefined,
+      toolCallId: row.toolCallId ?? undefined,
+      type: row.type ?? 'default',
+      userId: row.userId,
+    };
   };
 
   /**

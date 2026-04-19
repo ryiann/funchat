@@ -1,8 +1,30 @@
-import type { Chat } from 'chat';
+import type { Chat, Message } from 'chat';
+
+import type { AttachmentSource } from '@/server/services/aiAgent/ingestAttachment';
 
 // ============================================================================
 // Bot Platform Core Types
 // ============================================================================
+
+/**
+ * Extended return type for `extractFiles` that carries optional warnings
+ * (e.g. "file too large") alongside extracted files. Warnings are appended
+ * to the agent prompt so the AI can inform the user naturally.
+ */
+export interface ExtractFilesResult {
+  files?: AttachmentSource[];
+  warnings?: string[];
+}
+
+// --------------- Connection Mode ---------------
+
+/**
+ * How the platform communicates with the server.
+ * - 'webhook': stateless HTTP callbacks (can run in serverless)
+ * - 'websocket': persistent WebSocket connection (e.g. Discord, QQ)
+ * - 'polling': persistent long-polling connection (e.g. WeChat)
+ */
+export type ConnectionMode = 'polling' | 'webhook' | 'websocket';
 
 // --------------- Field Schema ---------------
 
@@ -58,7 +80,7 @@ export interface PlatformMessenger {
   createMessage: (content: string) => Promise<void>;
   editMessage: (messageId: string, content: string) => Promise<void>;
   removeReaction: (messageId: string, emoji: string) => Promise<void>;
-  triggerTyping: () => Promise<void>;
+  triggerTyping?: () => Promise<void>;
   updateThreadName?: (name: string) => Promise<void>;
 }
 
@@ -100,6 +122,19 @@ export interface PlatformClient {
   extractChatId: (platformThreadId: string) => string;
 
   /**
+   * Resolve attachments on an inbound `Message` into `AttachmentSource[]` for
+   * ingestion by the bridge. Each platform owns its own attachment quirks
+   * here: data-source priority, type-only metadata inference, quoted-message
+   * handling, and re-download paths for data lost during chat-sdk Redis
+   * serialization (functions and buffers don't survive `Message.toJSON`).
+   *
+   * Optional — when omitted, the bridge falls back to its legacy
+   * `extractFiles` implementation. Eventually all platforms will implement
+   * this and the bridge fallback will be deleted.
+   */
+  extractFiles?: (message: Message) => Promise<AttachmentSource[] | ExtractFilesResult | undefined>;
+
+  /**
    * Transform outbound Markdown content into a format the platform can render.
    * Called before `formatReply` and `splitMessage`.
    *
@@ -117,10 +152,10 @@ export interface PlatformClient {
    */
   formatReply?: (body: string, stats?: UsageStats) => string;
 
+  // --- Runtime Operations ---
+
   /** Get a messenger for a specific thread (outbound messaging). */
   getMessenger: (platformThreadId: string) => PlatformMessenger;
-
-  // --- Runtime Operations ---
 
   readonly id: string;
 
@@ -230,6 +265,7 @@ export abstract class ClientFactory {
     _credentials: Record<string, string>,
     _settings?: Record<string, unknown>,
     _applicationId?: string,
+    _platform?: string,
   ): Promise<ValidationResult> {
     return { valid: true };
   }
@@ -251,23 +287,26 @@ export abstract class ClientFactory {
  * Contains metadata, factory, and validation. All runtime operations go through PlatformClient.
  */
 export interface PlatformDefinition {
-  /**
-   * Authentication flow for obtaining credentials.
-   * - 'qrcode': QR code scan flow (e.g. WeChat iLink)
-   * When set, the frontend renders a QR code auth UI instead of manual credential inputs.
-   */
-  authFlow?: 'qrcode';
-
   /** Factory for creating PlatformClient instances and validating credentials/settings. */
   clientFactory: ClientFactory;
 
   /**
    * Connection mode: how the platform communicates with the server.
    * - 'webhook': stateless HTTP callbacks (can run in serverless)
-   * - 'persistent': requires a long-running client (e.g. websocket or long-polling)
-   * Defaults to 'webhook'.
+   * - 'websocket': persistent WebSocket connection (e.g. Discord, QQ)
+   * - 'polling': persistent long-polling connection (e.g. WeChat)
+   *
+   * For single-mode platforms this is the runtime mode. For multi-mode
+   * platforms where users can pick per-provider via `settings.connectionMode`,
+   * this represents the *recommended* default for new providers (form initial
+   * value + cron coarse filter).
+   *
+   * For platforms that added multi-mode support after launch (Slack/Feishu/
+   * Lark/QQ), legacy provider rows without an explicit setting fall back to
+   * `'webhook'` instead — see `LEGACY_WEBHOOK_PLATFORMS` and
+   * `getEffectiveConnectionMode` in `./utils.ts`.
    */
-  connectionMode?: 'persistent' | 'webhook';
+  connectionMode: ConnectionMode;
 
   /** The description of the platform. */
   description?: string;

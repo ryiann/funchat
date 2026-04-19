@@ -1,6 +1,7 @@
 import { Flexbox, Highlighter } from '@lobehub/ui';
 import { memo, useCallback } from 'react';
 
+import SafeBoundary from '@/components/ErrorBoundary';
 import { LOADING_FLAT } from '@/const/message';
 import { useErrorContent } from '@/features/Conversation/Error';
 import { type AssistantContentBlock } from '@/types/index';
@@ -39,6 +40,8 @@ const ContentBlock = memo<ContentBlockProps>(
     const hasTools = tools && tools.length > 0;
     const showReasoning =
       (!!reasoning && reasoning.content?.trim() !== '') || (!reasoning && isReasoning);
+    const hasContent = !!content && content !== LOADING_FLAT;
+    const showMessageContent = hasContent || content === LOADING_FLAT || hasTools;
 
     const handleRegenerate = useCallback(async () => {
       await deleteMessage(id);
@@ -73,16 +76,34 @@ const ContentBlock = memo<ContentBlockProps>(
 
     return (
       <Flexbox gap={8} id={id}>
-        {showReasoning && <Reasoning {...reasoning} id={id} />}
+        {showReasoning && (
+          <SafeBoundary>
+            <Reasoning {...reasoning} id={id} />
+          </SafeBoundary>
+        )}
 
-        {/* Content - markdown text */}
-        <MessageContent content={content} hasTools={hasTools} id={id} isFirstBlock={isFirstBlock} />
+        {showMessageContent && (
+          <SafeBoundary variant="alert">
+            <MessageContent
+              content={content}
+              hasTools={hasTools}
+              id={id}
+              isFirstBlock={isFirstBlock}
+            />
+          </SafeBoundary>
+        )}
 
-        {/* Image files */}
-        {showImageItems && <ImageFileListViewer items={imageList} />}
+        {showImageItems && (
+          <SafeBoundary>
+            <ImageFileListViewer items={imageList} />
+          </SafeBoundary>
+        )}
 
-        {/* Tools */}
-        {hasTools && <Tools disableEditing={disableEditing} messageId={id} tools={tools} />}
+        {hasTools && (
+          <SafeBoundary>
+            <Tools disableEditing={disableEditing} messageId={id} tools={tools} />
+          </SafeBoundary>
+        )}
       </Flexbox>
     );
   },
