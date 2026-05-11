@@ -2,7 +2,7 @@
 
 import { Empty, Flexbox, SearchBar } from '@lobehub/ui';
 import { SearchIcon } from 'lucide-react';
-import { memo, useMemo, useState } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 
@@ -34,6 +34,14 @@ const AllRecentsDrawer = memo<AllRecentsDrawerProps>(({ open, onClose }) => {
     if (!keyword) return recents;
     return recents.filter((item) => item.title.toLowerCase().includes(keyword));
   }, [recents, searchKeyword]);
+
+  const getRecentRoute = useCallback((item: (typeof filteredRecents)[number]) => {
+    if (item.type !== 'task') return item.routePath;
+    const taskId = item.id;
+    if (!taskId) return item.routePath;
+
+    return `/task/${taskId}`;
+  }, []);
 
   return (
     <SideBarDrawer
@@ -68,7 +76,7 @@ const AllRecentsDrawer = memo<AllRecentsDrawerProps>(({ open, onClose }) => {
             <Link
               key={`${item.type}-${item.id}`}
               style={{ color: 'inherit', textDecoration: 'none' }}
-              to={item.routePath}
+              to={getRecentRoute(item)}
             >
               <RecentListItem {...item} />
             </Link>

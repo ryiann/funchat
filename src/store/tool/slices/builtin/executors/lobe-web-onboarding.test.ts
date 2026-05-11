@@ -1,3 +1,4 @@
+import { InterventionChecker } from '@lobechat/agent-runtime';
 import { WebOnboardingApiName, WebOnboardingManifest } from '@lobechat/builtin-tool-web-onboarding';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -51,6 +52,17 @@ describe('webOnboardingExecutor', () => {
 
     expect(saveUserQuestionApi).toMatchObject({
       description: expect.stringContaining('agentName and agentEmoji'),
+      humanIntervention: [
+        {
+          match: { agentName: { pattern: '\\S', type: 'regex' } },
+          policy: 'always',
+        },
+        {
+          match: { agentEmoji: { pattern: '\\S', type: 'regex' } },
+          policy: 'always',
+        },
+        { policy: 'never' },
+      ],
       parameters: {
         additionalProperties: false,
         properties: {
@@ -61,11 +73,48 @@ describe('webOnboardingExecutor', () => {
             items: { type: 'string' },
             type: 'array',
           },
-          responseLanguage: { type: 'string' },
         },
         type: 'object',
       },
     });
+  });
+
+  it('requires approval only when saveUserQuestion updates agent identity fields', () => {
+    const saveUserQuestionApi = WebOnboardingManifest.api.find(
+      (api) => api.name === WebOnboardingApiName.saveUserQuestion,
+    );
+    const humanIntervention = saveUserQuestionApi?.humanIntervention;
+
+    expect(humanIntervention).toBeDefined();
+    expect(Array.isArray(humanIntervention)).toBe(true);
+
+    if (!Array.isArray(humanIntervention)) {
+      throw new TypeError('saveUserQuestion humanIntervention must use static rules');
+    }
+
+    expect(
+      InterventionChecker.shouldIntervene({
+        config: humanIntervention,
+        securityBlacklist: [],
+        toolArgs: { agentName: 'Atlas' },
+      }),
+    ).toBe('always');
+
+    expect(
+      InterventionChecker.shouldIntervene({
+        config: humanIntervention,
+        securityBlacklist: [],
+        toolArgs: { agentEmoji: '🛰️' },
+      }),
+    ).toBe('always');
+
+    expect(
+      InterventionChecker.shouldIntervene({
+        config: humanIntervention,
+        securityBlacklist: [],
+        toolArgs: { fullName: 'Ada Lovelace' },
+      }),
+    ).toBe('never');
   });
 
   it('calls finishOnboarding service and syncs user state', async () => {

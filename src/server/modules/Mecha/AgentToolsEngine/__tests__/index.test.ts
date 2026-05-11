@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { KnowledgeBaseManifest } from '@lobechat/builtin-tool-knowledge-base';
+import { LobeAgentManifest } from '@lobechat/builtin-tool-lobe-agent';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import { MemoryManifest } from '@lobechat/builtin-tool-memory';
 import { RemoteDeviceManifest } from '@lobechat/builtin-tool-remote-device';
@@ -209,6 +210,40 @@ describe('createServerAgentToolsEngine', () => {
     });
 
     expect(result.enabledToolIds).not.toContain(WebBrowsingManifest.identifier);
+  });
+
+  it('should enable VisualUnderstanding when injected into runtime plugins', () => {
+    const context = createMockContext();
+    const engine = createServerAgentToolsEngine(context, {
+      agentConfig: { plugins: [LobeAgentManifest.identifier] },
+      model: 'deepseek-chat',
+      provider: 'deepseek',
+    });
+
+    const result = engine.generateToolsDetailed({
+      model: 'deepseek-chat',
+      provider: 'deepseek',
+      toolIds: [LobeAgentManifest.identifier],
+    });
+
+    expect(result.enabledToolIds).toContain(LobeAgentManifest.identifier);
+  });
+
+  it('should not enable VisualUnderstanding by default', () => {
+    const context = createMockContext();
+    const engine = createServerAgentToolsEngine(context, {
+      agentConfig: { plugins: [] },
+      model: 'deepseek-chat',
+      provider: 'deepseek',
+    });
+
+    const result = engine.generateToolsDetailed({
+      model: 'deepseek-chat',
+      provider: 'deepseek',
+      toolIds: [],
+    });
+
+    expect(result.enabledToolIds).not.toContain(LobeAgentManifest.identifier);
   });
 
   it('should enable KnowledgeBase when hasEnabledKnowledgeBases is true', () => {
@@ -475,6 +510,51 @@ describe('createServerAgentToolsEngine', () => {
 
       expect(result.enabledToolIds).not.toContain(RemoteDeviceManifest.identifier);
     });
+
+    it('should disable RemoteDevice in bot conversations when no device auto-activated', () => {
+      // Bot callers (Telegram/Discord/Slack) have no client-executor, so the
+      // legacy rule would auto-enable RemoteDevice, and its systemRole would
+      // hijack the Activator and tell the model to ask the user to open the
+      // desktop app — blocking cloud-tool discovery (e.g. Klavis Gmail).
+      const context = createMockContext();
+      const engine = createServerAgentToolsEngine(context, {
+        agentConfig: { plugins: [RemoteDeviceManifest.identifier] },
+        deviceContext: { gatewayConfigured: true },
+        isBotConversation: true,
+        model: 'gpt-4',
+        provider: 'openai',
+      });
+
+      const result = engine.generateToolsDetailed({
+        toolIds: [RemoteDeviceManifest.identifier],
+        model: 'gpt-4',
+        provider: 'openai',
+      });
+
+      expect(result.enabledToolIds).not.toContain(RemoteDeviceManifest.identifier);
+    });
+
+    it('should still enable RemoteDevice in bot conversations when a device is auto-activated', () => {
+      // When a device is bound / auto-activated for the bot topic, LocalSystem
+      // takes over the remote proxy anyway — so RemoteDevice stays disabled
+      // (its usual rule), not due to isBotConversation.
+      const context = createMockContext();
+      const engine = createServerAgentToolsEngine(context, {
+        agentConfig: { plugins: [RemoteDeviceManifest.identifier] },
+        deviceContext: { gatewayConfigured: true, deviceOnline: true, autoActivated: true },
+        isBotConversation: true,
+        model: 'gpt-4',
+        provider: 'openai',
+      });
+
+      const result = engine.generateToolsDetailed({
+        toolIds: [RemoteDeviceManifest.identifier],
+        model: 'gpt-4',
+        provider: 'openai',
+      });
+
+      expect(result.enabledToolIds).not.toContain(RemoteDeviceManifest.identifier);
+    });
   });
 
   describe('LocalSystem + RemoteDevice interaction', () => {
@@ -566,6 +646,26 @@ describe('createServerAgentToolsEngine', () => {
       });
 
       expect(result.enabledToolIds).not.toContain(LocalSystemManifest.identifier);
+    });
+
+    it('can suppress only LocalSystem while preserving the rest of tool discovery', () => {
+      const context = createMockContext();
+      const engine = createServerAgentToolsEngine(context, {
+        agentConfig: { plugins: [LocalSystemManifest.identifier, WebBrowsingManifest.identifier] },
+        clientRuntime: 'desktop',
+        disableLocalSystem: true,
+        model: 'gpt-4',
+        provider: 'openai',
+      });
+
+      const result = engine.generateToolsDetailed({
+        model: 'gpt-4',
+        provider: 'openai',
+        toolIds: [LocalSystemManifest.identifier, WebBrowsingManifest.identifier],
+      });
+
+      expect(result.enabledToolIds).not.toContain(LocalSystemManifest.identifier);
+      expect(result.enabledToolIds).toContain(WebBrowsingManifest.identifier);
     });
 
     it('does not enable LocalSystem for web callers even when gateway is configured', () => {

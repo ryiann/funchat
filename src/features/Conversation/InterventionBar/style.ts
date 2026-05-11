@@ -5,6 +5,10 @@ export const styles = createStaticStyles(({ css, cssVar }) => ({
     padding-block: 8px;
     padding-inline: 16px;
     border-block-start: 1px solid ${cssVar.colorBorderSecondary};
+
+    &:empty {
+      display: none;
+    }
   `,
   container: css`
     margin-block-end: 12px;
@@ -12,7 +16,6 @@ export const styles = createStaticStyles(({ css, cssVar }) => ({
   content: css`
     overflow-y: auto;
     flex: 1;
-
     min-height: 0;
     padding-block: 8px 12px;
   `,

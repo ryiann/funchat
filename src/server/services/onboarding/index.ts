@@ -1,8 +1,12 @@
 import { getDocumentTemplate } from '@lobechat/agent-templates';
 import { BUILTIN_AGENT_SLUGS } from '@lobechat/builtin-agents';
 import { CURRENT_ONBOARDING_VERSION } from '@lobechat/const';
+import type { OnboardingUserInfo } from '@lobechat/context-engine';
 import type {
+  ChatTopicMetadata,
+  MessagePluginItem,
   OnboardingPhase,
+  OnboardingSessionSnapshot,
   SaveUserQuestionField,
   SaveUserQuestionInput,
   UserAgentOnboarding,
@@ -32,15 +36,16 @@ import type { LobeChatDatabase } from '@/database/type';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { AgentService } from '@/server/services/agent';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
-import { translation } from '@/server/translation';
 
 const STRUCTURED_FIELD_LABELS: Record<SaveUserQuestionField, string> = {
   agentEmoji: 'agent emoji',
   agentName: 'agent name',
   fullName: 'full name',
   interests: 'interests',
-  responseLanguage: 'response language',
 };
+
+const AGENT_MANAGEMENT_IDENTIFIER = 'lobe-agent-management';
+const GROUP_AGENT_BUILDER_IDENTIFIER = 'lobe-group-agent-builder';
 
 const defaultAgentOnboardingState = (): UserAgentOnboarding => ({
   version: CURRENT_ONBOARDING_VERSION,
@@ -58,6 +63,51 @@ const isStructuredField = (value: string): value is SaveUserQuestionField =>
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const normalizeTitle = (value: unknown) => {
+  if (typeof value !== 'string') return undefined;
+
+  const trimmed = value.trim();
+
+  return trimmed.length > 0 ? trimmed : undefined;
+};
+
+const normalizeUserInfoField = (value: unknown) => {
+  if (typeof value !== 'string') return undefined;
+
+  const trimmed = value.trim();
+
+  return trimmed || undefined;
+};
+
+const parseToolArguments = (value?: string) => {
+  if (!value) return undefined;
+
+  try {
+    const parsed = JSON.parse(value);
+
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const appendUniqueTitle = (titles: string[], seen: Set<string>, value: unknown) => {
+  const title = normalizeTitle(value);
+  if (!title || seen.has(title)) return;
+
+  seen.add(title);
+  titles.push(title);
+};
+
+const pickPreferredTitle = (...values: unknown[]) => {
+  for (const value of values) {
+    const title = normalizeTitle(value);
+    if (title) return title;
+  }
+
+  return undefined;
+};
 
 interface SaveUserQuestionResult {
   content: string;
@@ -210,29 +260,19 @@ export class OnboardingService {
     return this.userModel.getUserState(KeyVaultsGateKeeper.getUserKeyVaults);
   };
 
-  private getUserLocale = async () => {
+  getInitialUserInfo = async (): Promise<OnboardingUserInfo | undefined> => {
     const userState = await this.getUserState();
+    const fullName = normalizeUserInfoField(userState.fullName);
+    const username = normalizeUserInfoField(userState.username);
+    const displayName = fullName || username;
 
-    return userState.settings?.general?.responseLanguage || 'en-US';
-  };
+    if (!displayName && !fullName && !username) return undefined;
 
-  private getWelcomeMessageContent = async () => {
-    const { t } = await translation('onboarding', await this.getUserLocale());
-
-    return t('agent.welcome');
-  };
-
-  private ensureWelcomeMessage = async (topicId: string, agentId: string) => {
-    const existingMessages = await this.messageModel.query({ agentId, pageSize: 1, topicId });
-
-    if (existingMessages.length > 0) return;
-
-    await this.messageModel.create({
-      agentId,
-      content: await this.getWelcomeMessageContent(),
-      role: 'assistant',
-      topicId,
-    });
+    return {
+      ...(displayName ? { displayName } : {}),
+      ...(fullName ? { fullName } : {}),
+      ...(username ? { username } : {}),
+    };
   };
 
   private ensureTopic = async (state: UserAgentOnboarding, agentId: string) => {
@@ -265,8 +305,6 @@ export class OnboardingService {
     // User fields
     if (!userState.fullName?.trim()) missingFields.push('fullName');
     if (!(userState.interests?.length ?? 0)) missingFields.push('interests');
-    if (!userState.settings?.general?.responseLanguage?.trim())
-      missingFields.push('responseLanguage');
 
     return missingFields;
   };
@@ -286,17 +324,135 @@ export class OnboardingService {
     return result[0]?.count ?? 0;
   };
 
+  private buildOnboardingSessionSnapshot = (
+    existing: OnboardingSessionSnapshot | undefined,
+    phase: OnboardingSessionSnapshot['phase'],
+    now: string,
+    options?: {
+      finalAgentNames?: string[];
+      finishedAt?: string;
+    },
+  ): OnboardingSessionSnapshot => {
+    const snapshot: OnboardingSessionSnapshot = {
+      agentIdentityCompletedAt: existing?.agentIdentityCompletedAt,
+      discoveryCompletedAt: existing?.discoveryCompletedAt,
+      finalAgentNames: options?.finalAgentNames ?? existing?.finalAgentNames,
+      finishedAt: existing?.finishedAt ?? options?.finishedAt,
+      lastActiveAt: now,
+      phase,
+      startedAt: existing?.startedAt ?? now,
+      userIdentityCompletedAt: existing?.userIdentityCompletedAt,
+      version: CURRENT_ONBOARDING_VERSION,
+    };
+
+    if (existing?.agentMarketplacePick) {
+      snapshot.agentMarketplacePick = existing.agentMarketplacePick;
+    }
+
+    if (!snapshot.agentIdentityCompletedAt && phase !== 'agent_identity') {
+      snapshot.agentIdentityCompletedAt = now;
+    }
+
+    if (!snapshot.userIdentityCompletedAt && ['discovery', 'summary'].includes(phase)) {
+      snapshot.userIdentityCompletedAt = now;
+    }
+
+    if (!snapshot.discoveryCompletedAt && phase === 'summary') {
+      snapshot.discoveryCompletedAt = now;
+    }
+
+    return snapshot;
+  };
+
+  private syncTopicOnboardingSession = async (
+    topicId: string,
+    phase: OnboardingSessionSnapshot['phase'],
+    options?: {
+      finalAgentNames?: string[];
+      finishedAt?: string;
+      metadata?: ChatTopicMetadata | null;
+      now?: string;
+    },
+  ) => {
+    const topic =
+      options?.metadata === undefined ? await this.topicModel.findById(topicId) : undefined;
+    const metadata = options?.metadata ?? topic?.metadata;
+    const now = options?.now ?? new Date().toISOString();
+    const snapshot = this.buildOnboardingSessionSnapshot(
+      metadata?.onboardingSession,
+      phase,
+      now,
+      options,
+    );
+
+    await this.topicModel.updateMetadata(topicId, { onboardingSession: snapshot });
+
+    return snapshot;
+  };
+
+  private getFinalAgentNamesFromToolCalls = (plugins: MessagePluginItem[]) => {
+    const titles: string[] = [];
+    const seen = new Set<string>();
+
+    for (const plugin of plugins) {
+      if (plugin.error) continue;
+
+      const state = isRecord(plugin.state) ? plugin.state : undefined;
+      const args = parseToolArguments(plugin.arguments);
+
+      if (
+        plugin.identifier === AGENT_MANAGEMENT_IDENTIFIER &&
+        plugin.apiName === 'createAgent' &&
+        state?.success === true
+      ) {
+        appendUniqueTitle(titles, seen, pickPreferredTitle(args?.title));
+        continue;
+      }
+
+      if (plugin.identifier !== GROUP_AGENT_BUILDER_IDENTIFIER) continue;
+
+      if (plugin.apiName === 'createAgent' && state?.success === true) {
+        appendUniqueTitle(titles, seen, pickPreferredTitle(state.title, args?.title));
+        continue;
+      }
+
+      if (plugin.apiName !== 'batchCreateAgents') continue;
+
+      const stateAgents = Array.isArray(state?.agents) ? state.agents.filter(isRecord) : [];
+      const argAgents = Array.isArray(args?.agents) ? args.agents.filter(isRecord) : [];
+      const successCount = typeof state?.successCount === 'number' ? state.successCount : 0;
+
+      if (successCount <= 0 && stateAgents.length === 0) continue;
+
+      for (const [index, agent] of stateAgents.entries()) {
+        appendUniqueTitle(titles, seen, pickPreferredTitle(agent.title, argAgents[index]?.title));
+      }
+    }
+
+    return titles;
+  };
+
+  private resolveFinalAgentNames = async (topicId?: string) => {
+    if (!topicId) return [];
+
+    try {
+      const plugins = await this.messageModel.listMessagePluginsByTopic(topicId);
+
+      return this.getFinalAgentNamesFromToolCalls(plugins);
+    } catch (error) {
+      console.error('[OnboardingService] Failed to resolve final agent names:', error);
+
+      return [];
+    }
+  };
+
   private derivePhase = async (
     missingStructuredFields: SaveUserQuestionField[],
     discoveryContext?: { currentUserMessageCount: number; startUserMessageCount: number },
   ): Promise<OnboardingPhase> => {
     if (missingStructuredFields.includes('agentName')) return 'agent_identity';
     if (missingStructuredFields.includes('fullName')) return 'user_identity';
-    if (
-      missingStructuredFields.includes('interests') ||
-      missingStructuredFields.includes('responseLanguage')
-    )
-      return 'discovery';
+    if (missingStructuredFields.includes('interests')) return 'discovery';
 
     // All fields complete — check pacing gate
     if (discoveryContext) {
@@ -323,12 +479,14 @@ export class OnboardingService {
         ? state
         : await this.saveState({ ...state, activeTopicId: topicId });
 
-    await this.ensureWelcomeMessage(topicId, builtinAgent.id);
+    const topic = await this.topicModel.findById(topicId);
+    const context = await this.getState();
 
     return {
       agentId: builtinAgent.id,
       agentOnboarding: nextState,
-      context: await this.getState(),
+      context,
+      feedbackSubmitted: !!topic?.metadata?.onboardingFeedback,
       topicId,
     };
   };
@@ -337,18 +495,26 @@ export class OnboardingService {
     const userState = await this.getUserState();
     const state = this.ensureState(userState.agentOnboarding);
     const missingStructuredFields = await this.getMissingStructuredFields();
+    const topicId = state.activeTopicId;
 
     if (state.finishedAt) {
+      if (topicId) {
+        const topic = await this.topicModel.findById(topicId);
+        await this.syncTopicOnboardingSession(topicId, 'summary', {
+          finishedAt: state.finishedAt,
+          metadata: topic?.metadata,
+        });
+      }
+
       return {
         finished: true,
         missingStructuredFields,
         phase: 'summary',
-        topicId: state.activeTopicId,
+        topicId,
         version: state.version,
       };
     }
 
-    const topicId = state.activeTopicId;
     let currentUserMessageCount: number | undefined;
     let discoveryContext:
       | { currentUserMessageCount: number; startUserMessageCount: number }
@@ -381,6 +547,10 @@ export class OnboardingService {
     }
 
     const phase = await this.derivePhase(missingStructuredFields, discoveryContext);
+    if (topicId) {
+      const topic = await this.topicModel.findById(topicId);
+      await this.syncTopicOnboardingSession(topicId, phase, { metadata: topic?.metadata });
+    }
 
     // Compute pacing data for discovery phase
     let discoveryUserMessageCount: number | undefined;
@@ -445,26 +615,6 @@ export class OnboardingService {
 
     if (Object.keys(userPatch).length > 0) {
       await this.userModel.updateUser(userPatch);
-    }
-
-    const responseLanguage =
-      typeof parsed.responseLanguage === 'string' && parsed.responseLanguage.trim()
-        ? parsed.responseLanguage.trim()
-        : undefined;
-    if (responseLanguage) {
-      const currentResponseLanguage = userState.settings?.general?.responseLanguage;
-
-      if (responseLanguage === currentResponseLanguage) {
-        unchangedFields.push('responseLanguage');
-      } else {
-        const currentSettings = await this.userModel.getUserSettings();
-        await this.userModel.updateSetting({
-          general: merge(currentSettings?.general || {}, {
-            responseLanguage,
-          }),
-        });
-        savedFields.push('responseLanguage');
-      }
     }
 
     // Update inbox agent avatar and title when agent identity fields are provided
@@ -567,6 +717,7 @@ export class OnboardingService {
     }
 
     const finishedAt = new Date().toISOString();
+    const finalAgentNames = await this.resolveFinalAgentNames(state.activeTopicId);
 
     await this.userModel.updateUser({
       agentOnboarding: {
@@ -580,6 +731,16 @@ export class OnboardingService {
         version: CURRENT_ONBOARDING_VERSION,
       },
     });
+
+    if (state.activeTopicId) {
+      const topic = await this.topicModel.findById(state.activeTopicId);
+      await this.syncTopicOnboardingSession(state.activeTopicId, 'summary', {
+        finalAgentNames,
+        finishedAt,
+        metadata: topic?.metadata,
+        now: finishedAt,
+      });
+    }
 
     await this.safeTransferToInbox(state.activeTopicId);
 
@@ -595,23 +756,21 @@ export class OnboardingService {
   reset = async () => {
     const state = defaultAgentOnboardingState();
 
+    // Preserve users.full_name and users.username on reset.
+    // Why: fullName/username are usually seeded from OAuth at signup, and we
+    // surface them to the agent via <user_info> so it can ask "May I call you
+    // <displayName>?" each round. Clearing fullName here would erase the
+    // OAuth-derived hint and force the agent to fall back to an open-ended
+    // name question on every redo.
+    // How to apply: only clear scopes that genuinely belong to the agent
+    // onboarding session (interests, agentOnboarding state, persona doc,
+    // inbox agent title/avatar). responseLanguage is set in the shared-prefix
+    // step and is also out of scope here — use the dedicated reset script
+    // for a full account reset.
     await this.userModel.updateUser({
       agentOnboarding: state,
-      fullName: null,
       interests: [],
     });
-
-    // Reset responseLanguage in user settings
-    try {
-      const currentSettings = await this.userModel.getUserSettings();
-      await this.userModel.updateSetting({
-        general: merge(currentSettings?.general || {}, {
-          responseLanguage: null,
-        }),
-      });
-    } catch (error) {
-      console.error('[OnboardingService] Failed to reset responseLanguage:', error);
-    }
 
     // Reset persona documents
     try {

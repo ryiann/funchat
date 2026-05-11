@@ -206,6 +206,19 @@ export default {
   'analytics.telemetry.desc': 'Help us improve {{appName}} with anonymous usage data',
   'analytics.telemetry.title': 'Send Anonymous Usage Data',
   'analytics.title': 'Analytics',
+
+  // Heterogeneous agent CLI status (shown on agent profile page in integration mode)
+  'heterogeneousStatus.account.label': 'Account',
+  'heterogeneousStatus.auth.api': 'API',
+  'heterogeneousStatus.auth.label': 'Auth Method',
+  'heterogeneousStatus.auth.subscription': 'Subscription',
+  'heterogeneousStatus.command.edit': 'Edit command',
+  'heterogeneousStatus.command.label': 'Launch Command',
+  'heterogeneousStatus.command.placeholder': 'Command name or absolute path',
+  'heterogeneousStatus.detecting': 'Detecting {{name}} CLI...',
+  'heterogeneousStatus.plan.label': 'Plan',
+  'heterogeneousStatus.redetect': 'Re-detect',
+  'heterogeneousStatus.unavailable': '{{name}} CLI not found. Please install or configure it.',
   'checking': 'Checking...',
 
   // Credentials Management
@@ -455,6 +468,11 @@ export default {
   'notification.email.title': 'Email Notifications',
   'notification.inbox.desc': 'Show notifications in the in-app inbox',
   'notification.inbox.title': 'Inbox Notifications',
+  'notification.category.generation.title': 'Generation',
+  'notification.category.schedule.title': 'Scheduled tasks',
+  'notification.item.agent_cron_job_failed': 'Scheduled task failed',
+  'notification.item.image_generation_completed': 'Image generation completed',
+  'notification.item.video_generation_completed': 'Video generation completed',
   'notification.title': 'Notification Channels',
   'myAgents.actions.cancel': 'Cancel',
   'myAgents.actions.confirmDeprecate': 'Confirm Deprecate',
@@ -531,6 +549,9 @@ export default {
   'settingAgent.tag.placeholder': 'Enter tag',
   'settingAgent.tag.title': 'Tag',
   'settingAgent.title': 'Agent info',
+  'settingAppearance.appTray.desc':
+    'Show the LobeHub icon in the system tray or macOS menu bar. Disabling it also removes tray menu access.',
+  'settingAppearance.appTray.title': 'Show App Tray',
   'settingAppearance.animationMode.agile': 'Agile',
   'settingAppearance.animationMode.desc':
     'Select the animation speed for application response actions',
@@ -541,6 +562,7 @@ export default {
   'settingAppearance.contextMenuMode.desc': 'Enable the right-click menu for some list items.',
   'settingAppearance.contextMenuMode.disabled': 'Disabled',
   'settingAppearance.contextMenuMode.title': 'Right-Click Menu Mode',
+  'settingAppearance.desktop.title': 'Desktop',
   'settingAppearance.neutralColor.desc': 'Custom grayscale with different color tendencies',
   'settingAppearance.neutralColor.title': 'Neutral Color',
   'settingAppearance.noAnimation.desc': 'Disable all animation effects in the application',
@@ -578,6 +600,10 @@ export default {
   'settingChat.inputTemplate.placeholder':
     'Preprocessing template {{text}} will be replaced with real-time input information',
   'settingChat.inputTemplate.title': 'User Input Preprocessing',
+  'settingChat.selfIteration.enabled.desc':
+    'Allow this assistant to review recent signals and improve its own skills when the lab workflow runs',
+  'settingChat.selfIteration.enabled.title': 'Enable Self-Iteration',
+  'settingChat.selfIteration.title': 'Advanced Labs',
   'settingChat.submit': 'Update Chat Preferences',
   'settingChat.title': 'Chat Settings',
   'settingChatAppearance.autoScrollOnStreaming.desc':
@@ -742,6 +768,9 @@ export default {
   'settingSystemTools.category.browserAutomation': 'Browser Automation',
   'settingSystemTools.category.browserAutomation.desc':
     'Tools for headless browser automation and web interaction',
+  'settingSystemTools.category.cliAgents': 'CLI Agents',
+  'settingSystemTools.category.cliAgents.desc':
+    'Agentic coding CLIs detected on your system, such as Claude Code, Codex, and Kimi',
   'settingSystemTools.category.contentSearch': 'Content Search',
   'settingSystemTools.category.contentSearch.desc': 'Tools for searching text content within files',
   'settingSystemTools.category.fileSearch': 'File Search',
@@ -758,9 +787,14 @@ export default {
   'settingSystemTools.tools.agentBrowser.desc':
     'Agent-browser - headless browser automation CLI for AI agents',
   'settingSystemTools.tools.ag.desc': 'The Silver Searcher - fast code searching tool',
+  'settingSystemTools.tools.aider.desc': 'Aider - AI pair programming in your terminal',
+  'settingSystemTools.tools.claude.desc': 'Claude Code - Anthropic official agentic coding CLI',
+  'settingSystemTools.tools.codex.desc': 'Codex - OpenAI agentic coding CLI',
   'settingSystemTools.tools.fd.desc': 'fd - fast and user-friendly alternative to find',
   'settingSystemTools.tools.find.desc': 'Unix find - standard file search command',
+  'settingSystemTools.tools.gemini.desc': 'Gemini CLI - Google agentic coding CLI',
   'settingSystemTools.tools.grep.desc': 'GNU grep - standard text search tool',
+  'settingSystemTools.tools.kimi.desc': 'Kimi CLI - Moonshot AI agentic coding CLI',
   'settingSystemTools.tools.mdfind.desc': 'macOS Spotlight search (fast indexed search)',
   'settingSystemTools.tools.lobehub.desc': 'LobeHub CLI - manage and connect to LobeHub services',
   'settingSystemTools.tools.bun.desc': 'Bun - fast JavaScript runtime and package manager',
@@ -769,6 +803,7 @@ export default {
   'settingSystemTools.tools.npm.desc': 'npm - Node.js package manager for installing dependencies',
   'settingSystemTools.tools.pnpm.desc': 'pnpm - fast, disk space efficient package manager',
   'settingSystemTools.tools.python.desc': 'Python - programming language runtime',
+  'settingSystemTools.tools.qwen.desc': 'Qwen Code - Alibaba Qwen agentic coding CLI',
   'settingSystemTools.tools.rg.desc': 'ripgrep - extremely fast text search tool',
   'settingSystemTools.tools.uv.desc': 'uv - extremely fast Python package manager',
   'settingTTS.openai.sttModel': 'OpenAI Speech-to-Text Model',
@@ -904,9 +939,6 @@ When I am ___, I need ___
   'systemAgent.promptRewrite.label': 'Model',
   'systemAgent.promptRewrite.modelDesc': 'Specify the model used to rewrite prompts',
   'systemAgent.promptRewrite.title': 'Prompt Rewrite Agent',
-  'systemAgent.queryRewrite.label': 'Model',
-  'systemAgent.queryRewrite.modelDesc': 'Specify the model used to optimize user inquiries',
-  'systemAgent.queryRewrite.title': 'Library query rewrite Agent',
   'systemAgent.thread.label': 'Model',
   'systemAgent.thread.modelDesc': 'The model designated for automatic renaming of subtopics',
   'systemAgent.thread.title': 'Subtopic Auto-Naming Agent',
@@ -951,6 +983,7 @@ When I am ___, I need ___
   'tab.manualFill': 'Manually Fill In',
   'tab.manualFill.desc': 'Configure a custom MCP skill manually',
   'tab.memory': 'Memory',
+  'tab.messenger': 'Messenger',
   'tab.notification': 'Notifications',
   'tab.profile': 'My Account',
   'tab.provider': 'Provider',
@@ -1019,6 +1052,9 @@ When I am ___, I need ___
   'tools.builtins.lobe-agent-documents.title': 'Documents',
   'tools.builtins.lobe-agent-management.description': 'Create, manage, and orchestrate AI agents',
   'tools.builtins.lobe-agent-management.title': 'Agent Management',
+  'tools.builtins.lobe-agent-marketplace.description':
+    'Show users a curated Agent Marketplace card and record which templates they pick.',
+  'tools.builtins.lobe-agent-marketplace.title': 'Agent Marketplace',
   'tools.builtins.lobe-brief.description':
     'Report progress, deliver results, and request user decisions',
   'tools.builtins.lobe-brief.title': 'Brief Tools',

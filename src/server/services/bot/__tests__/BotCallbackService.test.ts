@@ -18,6 +18,13 @@ const mockTriggerTyping = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 const mockRemoveReaction = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockCreateMessage = vi.hoisted(() => vi.fn().mockResolvedValue({ id: 'new-msg' }));
 const mockUpdateThreadName = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+// Default replaceReaction fans out to removeReaction so existing '👀' assertions
+// keep describing the effective behaviour (step swap / completion clear) end-to-end.
+const mockReplaceReaction = vi.hoisted(() =>
+  vi.fn().mockImplementation(async (messageId: string, prevEmoji: string | null) => {
+    if (prevEmoji) await mockRemoveReaction(messageId, prevEmoji);
+  }),
+);
 
 // Mock PlatformClient's getMessenger
 const mockGetMessenger = vi.hoisted(() =>
@@ -25,6 +32,7 @@ const mockGetMessenger = vi.hoisted(() =>
     createMessage: mockCreateMessage,
     editMessage: mockEditMessage,
     removeReaction: mockRemoveReaction,
+    replaceReaction: mockReplaceReaction,
     triggerTyping: mockTriggerTyping,
     updateThreadName: mockUpdateThreadName,
   })),
@@ -147,11 +155,18 @@ describe('BotCallbackService', () => {
     service = new BotCallbackService(FAKE_DB);
     setupCredentials();
 
+    // vi.clearAllMocks wipes the hoisted default impl; reinstall it so the
+    // replaceReaction spy keeps fanning out to removeReaction.
+    mockReplaceReaction.mockImplementation(async (messageId: string, prevEmoji: string | null) => {
+      if (prevEmoji) await mockRemoveReaction(messageId, prevEmoji);
+    });
+
     // Default: getMessenger returns the main messenger mock
     mockGetMessenger.mockImplementation(() => ({
       createMessage: mockCreateMessage,
       editMessage: mockEditMessage,
       removeReaction: mockRemoveReaction,
+      replaceReaction: mockReplaceReaction,
       triggerTyping: mockTriggerTyping,
       updateThreadName: mockUpdateThreadName,
     }));
@@ -326,9 +341,10 @@ describe('BotCallbackService', () => {
   // ==================== Completion handling ====================
 
   describe('completion handling', () => {
-    it('should render error message when reason is error', async () => {
+    it('should render operation id when reason is error', async () => {
       const body = makeBody({
         errorMessage: 'Model quota exceeded',
+        operationId: 'op-xyz-1',
         reason: 'error',
         type: 'completion',
       });
@@ -337,11 +353,15 @@ describe('BotCallbackService', () => {
 
       expect(mockEditMessage).toHaveBeenCalledWith(
         'progress-msg-1',
-        expect.stringContaining('Model quota exceeded'),
+        expect.stringContaining('op-xyz-1'),
+      );
+      expect(mockEditMessage).toHaveBeenCalledWith(
+        'progress-msg-1',
+        expect.not.stringContaining('Model quota exceeded'),
       );
     });
 
-    it('should use default error message when errorMessage is not provided', async () => {
+    it('should render generic failure message when operationId is missing', async () => {
       const body = makeBody({
         reason: 'error',
         type: 'completion',
@@ -349,10 +369,7 @@ describe('BotCallbackService', () => {
 
       await service.handleCallback(body);
 
-      expect(mockEditMessage).toHaveBeenCalledWith(
-        'progress-msg-1',
-        expect.stringContaining('Agent execution failed'),
-      );
+      expect(mockEditMessage).toHaveBeenCalledWith('progress-msg-1', '**Agent Execution Failed**');
     });
 
     it('should render stopped message when reason is interrupted', async () => {
@@ -423,6 +440,79 @@ describe('BotCallbackService', () => {
       });
 
       await expect(service.handleCallback(body)).resolves.toBeUndefined();
+    });
+
+    it('should fall back to createMessage when editMessage fails on completion', async () => {
+      mockEditMessage.mockRejectedValueOnce(
+        new Error("Telegram API editMessageText failed: 400 Bad Request: can't parse entities"),
+      );
+
+      const body = makeBody({
+        lastAssistantContent: 'The actual answer the user needs.',
+        reason: 'completed',
+        type: 'completion',
+      });
+
+      await service.handleCallback(body);
+
+      expect(mockEditMessage).toHaveBeenCalledTimes(1);
+      // Reply must reach the user via createMessage fallback
+      expect(mockCreateMessage).toHaveBeenCalledWith(
+        expect.stringContaining('The actual answer the user needs.'),
+      );
+    });
+
+    it('should fall back to createMessage when error-state edit fails', async () => {
+      mockEditMessage.mockRejectedValueOnce(new Error('message to edit not found'));
+
+      const body = makeBody({
+        operationId: 'op-fallback-1',
+        reason: 'error',
+        type: 'completion',
+      });
+
+      await service.handleCallback(body);
+
+      expect(mockCreateMessage).toHaveBeenCalledWith(expect.stringContaining('op-fallback-1'));
+    });
+
+    it('should skip send when lastAssistantContent is whitespace-only', async () => {
+      const body = makeBody({
+        // Whitespace passes the original `!lastAssistantContent` check but
+        // collapses to empty downstream — Telegram would reject with
+        // "message text is empty" and silently drop the reply.
+        lastAssistantContent: '   \n\n   ',
+        reason: 'completed',
+        type: 'completion',
+      });
+
+      await service.handleCallback(body);
+
+      expect(mockEditMessage).not.toHaveBeenCalled();
+      expect(mockCreateMessage).not.toHaveBeenCalled();
+    });
+
+    it('should still send subsequent chunks when one chunk fails mid-stream', async () => {
+      // Default 1800-char limit -> long content splits into multiple chunks.
+      const longContent = 'A'.repeat(2000) + '\n\n' + 'B'.repeat(2000) + '\n\n' + 'C'.repeat(2000);
+
+      // First follow-up chunk rejects; remaining chunks should still be attempted.
+      mockCreateMessage.mockRejectedValueOnce(
+        new Error('Telegram API sendMessage failed: 429 Too Many Requests'),
+      );
+
+      const body = makeBody({
+        lastAssistantContent: longContent,
+        reason: 'completed',
+        type: 'completion',
+      });
+
+      await service.handleCallback(body);
+
+      expect(mockEditMessage).toHaveBeenCalledTimes(1);
+      // The loop must keep going past the rejected chunk — at least 2 createMessage
+      // calls are expected (one rejected, one or more after it).
+      expect(mockCreateMessage.mock.calls.length).toBeGreaterThanOrEqual(2);
     });
 
     it('should not throw when sending interrupted message fails', async () => {
@@ -825,6 +915,7 @@ describe('BotCallbackService', () => {
         errorMessage: 'Rate limit exceeded',
         hookId: 'bot-completion',
         hookType: 'onComplete',
+        operationId: 'op-hook-1',
         reason: 'error',
         type: 'completion',
       });
@@ -833,7 +924,11 @@ describe('BotCallbackService', () => {
 
       expect(mockEditMessage).toHaveBeenCalledWith(
         'progress-msg-1',
-        expect.stringContaining('Rate limit exceeded'),
+        expect.stringContaining('op-hook-1'),
+      );
+      expect(mockEditMessage).toHaveBeenCalledWith(
+        'progress-msg-1',
+        expect.not.stringContaining('Rate limit exceeded'),
       );
     });
   });

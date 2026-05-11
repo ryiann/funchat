@@ -7,6 +7,10 @@ export default {
   'alert.cloud.descOnMobile':
     'All registered users get {{credit}} free computing credits per month—no setup needed.',
   'alert.cloud.title': '{{name}} beta is live',
+  'agentOnboardingPromo.actionLabel': 'Try it now',
+  'agentOnboardingPromo.description':
+    'Set up your agent teams in a quick chat with Lobe AI. Your existing agents remain unchanged.',
+  'agentOnboardingPromo.title': 'Quick Wizard',
   'appLoading.appIdle': 'Ready to start',
   'appLoading.appInitializing': 'Application is starting...',
   'appLoading.failed':
@@ -27,6 +31,8 @@ export default {
   'back': 'Back',
   'batchDelete': 'Batch Delete',
   'blog': 'Product Blog',
+  'botIntegrationBanner.dismiss': 'Dismiss',
+  'botIntegrationBanner.title': 'Add Channels to Lobe AI',
   'branching': 'Create Subtopic',
   'branchingDisable':
     'The "Sub-topic" feature is unavailable in the current mode. To use this feature, please switch to Postgres/Pglite DB mode or use LobeHub Cloud.',
@@ -184,6 +190,8 @@ export default {
 
   'cmdk.keywords.submitIssue': 'issue bug problem feedback',
 
+  'cmdk.keywords.tasks': 'tasks todo agent kanban',
+
   'cmdk.keywords.usage': 'usage statistics consumption quota',
 
   'cmdk.keywords.video': 'video,generate,seedance,kling',
@@ -264,6 +272,7 @@ export default {
   'cmdk.settings': 'Settings',
   'cmdk.starOnGitHub': 'Star us on GitHub',
   'cmdk.submitIssue': 'Submit Issue',
+  'cmdk.tasks': 'Tasks',
   'cmdk.theme': 'Theme',
   'cmdk.themeAuto': 'Auto',
   'cmdk.themeCurrent': 'Current',
@@ -343,6 +352,7 @@ export default {
   'footer.title': 'Like Our Product?',
   'fullscreen': 'Full Screen Mode',
   'generation.hero.taglinePrefix': 'Start Creating with',
+  'generation.promptModeration.blocked': 'Content policy check failed. Please revise your prompt.',
   'historyRange': 'History Range',
   'home.suggestQuestions': 'Try these examples',
   'import': 'Import',
@@ -500,6 +510,7 @@ export default {
   'tab.discover': 'Discover',
   'tab.eval': 'Eval Lab',
   'tab.files': 'Files',
+  'tab.generation': 'Generation',
   'tab.home': 'Home',
   'tab.knowledgeBase': 'Library',
   'tab.marketplace': 'Marketplace',
@@ -509,6 +520,7 @@ export default {
   'tab.resource': 'Resources',
   'tab.search': 'Search',
   'tab.setting': 'Settings',
+  'tab.tasks': 'Tasks',
   'tab.video': 'Video',
   'telemetry.allow': 'Allow',
   'telemetry.deny': 'Deny',
@@ -518,6 +530,10 @@ export default {
   'telemetry.title': 'Help improve {{appName}}',
   'temp': 'Temporary',
   'terms': 'Terms of Service',
+  'time.formatOtherYear': 'MMM D, YYYY',
+  'time.formatThisYear': 'MMM D',
+  'time.today': 'Today',
+  'time.yesterday': 'Yesterday',
   'unknownError': 'Unknown error',
   'update': 'Update',
   'updateAgent': 'Update Agent Information',

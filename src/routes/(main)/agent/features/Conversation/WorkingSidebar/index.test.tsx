@@ -1,23 +1,45 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as swr from '@/libs/swr';
 import { useGlobalStore } from '@/store/global';
 import { initialState } from '@/store/global/initialState';
+import { useUserStore } from '@/store/user';
+import { initialState as initialUserState } from '@/store/user/initialState';
 
-import Conversation from '../index';
 import AgentWorkingSidebar from './index';
+
+const mocks = vi.hoisted(() => ({
+  agentStoreState: {
+    activeAgentId: 'agent-1',
+    agentWorkingDirectoryById: {} as Record<string, string | undefined>,
+  },
+  repoType: undefined as 'git' | 'github' | undefined,
+  topicWorkingDirectory: undefined as string | undefined,
+}));
 
 vi.mock('@/libs/swr', async (importOriginal) => {
   const actual = await importOriginal<typeof swr>();
   return { ...actual, useClientDataSWR: vi.fn() };
 });
 
+vi.mock('./Review', () => ({
+  default: ({ workingDirectory }: { workingDirectory: string }) => (
+    <div data-testid="review-panel">{workingDirectory}</div>
+  ),
+}));
+
+vi.mock('@/features/ChatInput/RuntimeConfig/useRepoType', () => ({
+  useRepoType: (path?: string) => (path ? mocks.repoType : undefined),
+}));
+
 vi.mock('@lobehub/ui', () => ({
-  ActionIcon: ({ ...props }: { [key: string]: unknown }) => <button {...props} />,
   Accordion: ({ children, ...props }: { children?: ReactNode; [key: string]: unknown }) => (
     <div {...props}>{children}</div>
+  ),
+  ActionIcon: ({ children, ...props }: { children?: ReactNode; [key: string]: unknown }) => (
+    <button {...props}>{children}</button>
   ),
   AccordionItem: ({
     children,
@@ -36,14 +58,30 @@ vi.mock('@lobehub/ui', () => ({
   Button: ({ children, ...props }: { children?: ReactNode; [key: string]: unknown }) => (
     <button {...props}>{children}</button>
   ),
+  Center: ({ children, ...props }: { children?: ReactNode; [key: string]: unknown }) => (
+    <div {...props}>{children}</div>
+  ),
   Checkbox: ({ children, ...props }: { children?: ReactNode; [key: string]: unknown }) => (
     <div {...props}>{children}</div>
   ),
-  DraggablePanel: ({ children, expand }: { children?: ReactNode; expand?: boolean }) => (
-    <div data-expand={String(expand)} data-testid="right-panel">
+  DraggablePanel: ({
+    children,
+    expand,
+    stableLayout,
+  }: {
+    children?: ReactNode;
+    expand?: boolean;
+    stableLayout?: boolean;
+  }) => (
+    <div
+      data-expand={String(expand)}
+      data-stable-layout={String(Boolean(stableLayout))}
+      data-testid="right-panel"
+    >
       {children}
     </div>
   ),
+  Empty: ({ description }: { description?: ReactNode }) => <div>{description}</div>,
   Avatar: ({ avatar }: { avatar?: ReactNode | string }) => <div>{avatar}</div>,
   Flexbox: ({ children, ...props }: { children?: ReactNode; [key: string]: unknown }) => (
     <div {...props}>{children}</div>
@@ -59,107 +97,145 @@ vi.mock('@lobehub/ui', () => ({
   TooltipGroup: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
 }));
 
+vi.mock('antd', () => ({
+  App: {
+    useApp: () => ({
+      message: { error: vi.fn(), success: vi.fn() },
+      modal: { confirm: vi.fn() },
+    }),
+  },
+  Progress: () => <div data-testid="workspace-progress-bar" />,
+  Segmented: ({
+    options,
+    value,
+    onChange,
+  }: {
+    onChange?: (value: string) => void;
+    options?: Array<{ label?: ReactNode; value: string }>;
+    value?: string;
+  }) => (
+    <div data-testid="working-sidebar-tabs">
+      {options?.map((opt) => (
+        <button
+          data-active={String(opt.value === value)}
+          key={opt.value}
+          type="button"
+          onClick={() => onChange?.(opt.value)}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  ),
+  Spin: () => <div data-testid="spin" />,
+}));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) =>
       (
         ({
-          'workingPanel.resources': 'Resources',
           'workingPanel.resources.empty': 'No agent documents yet',
+          'workingPanel.review.title': 'Review',
+          'workingPanel.space': 'Space',
         }) as Record<string, string>
       )[key] || key,
   }),
 }));
 
-vi.mock('@/components/DragUploadZone', () => ({
-  default: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-  useUploadFiles: () => ({ handleUploadFiles: vi.fn() }),
-}));
-
 vi.mock('@/store/agent', () => ({
   useAgentStore: (selector: (state: Record<string, unknown>) => unknown) =>
-    selector?.({
-      activeAgentId: 'agent-1',
-      useFetchBotProviders: () => ({ data: [], isLoading: false }),
-      useFetchPlatformDefinitions: () => ({ data: [], isLoading: false }),
-    }),
+    selector?.(mocks.agentStoreState),
 }));
 
 vi.mock('@/store/agent/selectors', () => ({
-  agentSelectors: {
-    currentAgentModel: () => 'mock-model',
-    currentAgentModelProvider: () => 'mock-provider',
+  agentByIdSelectors: {
+    getAgentWorkingDirectoryById:
+      (agentId: string) =>
+      (state: { agentWorkingDirectoryById?: Record<string, string | undefined> }) =>
+        state.agentWorkingDirectoryById?.[agentId],
   },
 }));
 
-vi.mock('@/features/Conversation/store', () => ({
-  dataSelectors: {
-    dbMessages: (state: { dbMessages?: unknown[] }) => state.dbMessages,
+vi.mock('@/store/chat', () => ({
+  useChatStore: (selector: (state: Record<string, unknown>) => unknown) =>
+    selector({
+      activeTopicId: undefined,
+      closeDocument: vi.fn(),
+      dbMessagesMap: {},
+      openDocument: vi.fn(),
+      portalStack: [],
+    }),
+}));
+
+vi.mock('@/store/chat/selectors', () => ({
+  chatPortalSelectors: {
+    portalDocumentId: () => null,
   },
-  useConversationStore: (selector: (state: { dbMessages: unknown[] }) => unknown) =>
-    selector({ dbMessages: [] }),
-}));
-
-vi.mock('../ConversationArea', () => ({
-  default: () => <div>conversation-area</div>,
-}));
-
-vi.mock('../Header', () => ({
-  default: () => <div>chat-header</div>,
-}));
-
-vi.mock('./AgentDocumentEditorPanel', () => ({
-  default: ({ selectedDocumentId }: { selectedDocumentId: string | null }) => (
-    <div data-testid="workspace-document-panel">{selectedDocumentId}</div>
-  ),
+  topicSelectors: {
+    currentTopicWorkingDirectory: () => mocks.topicWorkingDirectory,
+  },
 }));
 
 beforeEach(() => {
+  mocks.agentStoreState.activeAgentId = 'agent-1';
+  mocks.agentStoreState.agentWorkingDirectoryById = {};
+  mocks.repoType = undefined;
+  mocks.topicWorkingDirectory = undefined;
   vi.mocked(swr.useClientDataSWR).mockImplementation((() => ({
     data: [],
     error: undefined,
     isLoading: false,
   })) as unknown as typeof swr.useClientDataSWR);
-  useGlobalStore.setState(initialState);
+  useGlobalStore.setState({
+    ...initialState,
+    isStatusInit: true,
+    status: { ...initialState.status },
+  });
+  useUserStore.setState({
+    ...initialUserState,
+    preference: {
+      ...initialUserState.preference,
+      lab: { ...initialUserState.preference.lab },
+    },
+  });
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('Conversation right panel mount', () => {
-  it('mounts the conversation-side right panel path and respects the existing global right-panel state', async () => {
-    const { unmount } = render(<Conversation />);
+describe('AgentWorkingSidebar', () => {
+  it('renders panel header title and resources empty state', () => {
+    render(<AgentWorkingSidebar />);
 
-    expect(screen.getByText('chat-header')).toBeInTheDocument();
-    expect(screen.getByText('conversation-area')).toBeInTheDocument();
-    expect(screen.getByTestId('right-panel')).toBeInTheDocument();
-    expect(screen.getByTestId('workspace-resources')).toBeInTheDocument();
-
-    await waitFor(() => {
-      expect(screen.getByTestId('right-panel')).toHaveAttribute('data-expand', 'true');
-      expect(useGlobalStore.getState().status.showRightPanel).toBe(true);
-    });
-
-    unmount();
-
-    expect(useGlobalStore.getState().status.showRightPanel).toBe(true);
-  });
-
-  it('renders resources section and empty state', () => {
-    render(<AgentWorkingSidebar selectedDocumentId={null} onSelectDocument={vi.fn()} />);
+    // Panel-level title (Space tab when no working directory)
+    expect(screen.getAllByText('Space').length).toBeGreaterThan(0);
 
     const resources = screen.getByTestId('workspace-resources');
-
-    expect(resources).toHaveTextContent('Resources');
     expect(resources).toHaveTextContent('No agent documents yet');
   });
 
-  it('switches to document editor inside the right panel when a document is selected', () => {
-    render(<AgentWorkingSidebar selectedDocumentId={'doc-1'} onSelectDocument={vi.fn()} />);
+  it('mounts a right panel wrapper', () => {
+    render(<AgentWorkingSidebar />);
 
     expect(screen.getByTestId('right-panel')).toBeInTheDocument();
-    expect(screen.getByTestId('workspace-document-panel')).toHaveTextContent('doc-1');
-    expect(screen.queryByTestId('workspace-resources')).not.toBeInTheDocument();
+    expect(screen.getByTestId('right-panel')).toHaveAttribute('data-stable-layout', 'true');
+  });
+
+  it('shows review when the agent has a git working directory but the topic does not', () => {
+    mocks.agentStoreState.agentWorkingDirectoryById['agent-1'] = '/Users/hai/LobeHub/lobehub';
+    mocks.repoType = 'git';
+    useGlobalStore.setState({
+      status: {
+        ...useGlobalStore.getState().status,
+        workingSidebarTab: 'review',
+      },
+    });
+
+    render(<AgentWorkingSidebar />);
+
+    expect(screen.getByRole('button', { name: 'Review' })).toBeInTheDocument();
+    expect(screen.getByTestId('review-panel')).toHaveTextContent('/Users/hai/LobeHub/lobehub');
   });
 });

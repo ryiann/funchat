@@ -1,4 +1,4 @@
-import type { TaskDetailData, TaskDetailWorkspaceNode } from '@lobechat/types';
+import type { TaskDetailData, TaskDetailWorkspaceNode, TaskStatus } from '@lobechat/types';
 
 // ── Formatting helpers for Task tool responses ──
 
@@ -85,23 +85,50 @@ export const formatTaskCreated = (
   return lines.join('\n');
 };
 
+export interface TaskListFilters {
+  assigneeAgentId?: string;
+  isDefaultScope?: boolean;
+  isForAllAgents?: boolean;
+  isForCurrentAgent?: boolean;
+  parentIdentifier?: string;
+  priorities?: number[];
+  statuses?: TaskStatus[];
+}
+
+const buildTaskListLabel = (filters: TaskListFilters): string => {
+  if (filters.isDefaultScope) {
+    if (filters.isForAllAgents) return 'top-level unfinished tasks across all agents';
+    return filters.isForCurrentAgent
+      ? 'top-level unfinished tasks of the current agent'
+      : 'top-level unfinished tasks';
+  }
+
+  const parts: string[] = [];
+  if (filters.statuses?.length) parts.push(`status=[${filters.statuses.join(',')}]`);
+  if (filters.priorities?.length) {
+    parts.push(`priority=[${filters.priorities.map((p) => priorityLabel(p)).join(',')}]`);
+  }
+  if (filters.assigneeAgentId) parts.push(`agent=${filters.assigneeAgentId}`);
+
+  if (filters.parentIdentifier) {
+    return parts.length > 0
+      ? `subtasks of ${filters.parentIdentifier} matching ${parts.join(', ')}`
+      : `subtasks of ${filters.parentIdentifier}`;
+  }
+
+  return parts.length > 0 ? `tasks matching ${parts.join(', ')}` : 'tasks';
+};
+
 /**
  * Format task list response
  */
-export const formatTaskList = (
-  tasks: TaskSummary[],
-  parentLabel: string,
-  filter?: string,
-): string => {
+export const formatTaskList = (tasks: TaskSummary[], filters: TaskListFilters): string => {
+  const label = buildTaskListLabel(filters);
   if (tasks.length === 0) {
-    const filterNote = filter ? ` with status "${filter}"` : '';
-    return `No subtasks found under ${parentLabel}${filterNote}.`;
+    return `No ${label}.`;
   }
 
-  return [
-    `${tasks.length} task(s) under ${parentLabel}:`,
-    ...tasks.map((t) => `  ${formatTaskLine(t)}`),
-  ].join('\n');
+  return [`${tasks.length} ${label}:`, ...tasks.map((t) => `  ${formatTaskLine(t)}`)].join('\n');
 };
 
 /**
@@ -210,7 +237,12 @@ export const formatTaskDetail = (t: TaskDetailData): string => {
           `  💬 ${act.time || ''} Topic #${act.seq || '?'} ${act.title || 'Untitled'} ${statusIcon(status)} ${status}${idSuffix}`,
         );
       } else if (act.type === 'brief') {
-        const resolved = act.resolvedAction ? ` ✏️ ${act.resolvedAction}` : '';
+        const resolvedLabel = act.resolvedAction
+          ? act.resolvedComment
+            ? `${act.resolvedAction}: ${act.resolvedComment}`
+            : act.resolvedAction
+          : '';
+        const resolved = resolvedLabel ? ` ✏️ ${resolvedLabel}` : '';
         const priStr = act.priority ? ` [${act.priority}]` : '';
         lines.push(
           `  ${briefIcon(act.briefType || '')} ${act.time || ''} Brief [${act.briefType}] ${act.title}${priStr}${resolved}${idSuffix}`,
@@ -219,7 +251,7 @@ export const formatTaskDetail = (t: TaskDetailData): string => {
         const author = act.agentId ? '🤖 agent' : '👤 user';
         const content = act.content || '';
         const truncated = content.length > 80 ? content.slice(0, 80) + '...' : content;
-        lines.push(`  💭 ${act.time || ''} ${author} ${truncated}`);
+        lines.push(`  💭 ${act.time || ''} ${author} ${truncated}${idSuffix}`);
       }
     }
   }
@@ -232,6 +264,12 @@ export const formatTaskDetail = (t: TaskDetailData): string => {
  */
 export const formatTaskEdited = (identifier: string, changes: string[]): string =>
   `Task ${identifier} updated:\n  ${changes.join('\n  ')}`;
+
+/**
+ * Format deleteTask response
+ */
+export const formatTaskDeleted = (identifier: string, name?: string | null): string =>
+  name ? `Task ${identifier} "${name}" has been deleted.` : `Task ${identifier} has been deleted.`;
 
 /**
  * Format dependency change response
@@ -573,4 +611,11 @@ export const buildTaskRunPrompt = (input: TaskRunPromptInput, now?: Date): strin
   return sections.join('\n\n');
 };
 
-export { priorityLabel, statusIcon };
+export { briefIcon, priorityLabel, statusIcon, timeAgo };
+
+export type { BuildTaskDetailPromptInput } from './buildTaskDetailPrompt';
+export { buildTaskDetailPrompt } from './buildTaskDetailPrompt';
+export type { BuildTaskListPromptInput } from './buildTaskListPrompt';
+export { buildTaskListPrompt } from './buildTaskListPrompt';
+export type { TaskManagerPromptDefaults } from './taskManagerDefaults';
+export { buildTaskManagerDefaultsPrompt } from './taskManagerDefaults';

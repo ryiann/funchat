@@ -2,7 +2,7 @@
 
 import type { AssistantContentBlock, EmojiReaction } from '@lobechat/types';
 import isEqual from 'fast-deep-equal';
-import type { MouseEventHandler } from 'react';
+import type { MouseEventHandler, ReactNode } from 'react';
 import { memo, Suspense, useCallback, useMemo } from 'react';
 
 import { MESSAGE_ACTION_BAR_PORTAL_ATTRIBUTES } from '@/const/messageActionPortal';
@@ -27,6 +27,7 @@ import {
 } from '../Contexts/message-action-context';
 import FileListViewer from '../User/components/FileListViewer';
 import Group from './components/Group';
+import type { WorkflowExpandLevelDefault } from './components/WorkflowCollapse';
 
 const EditState = dynamic(() => import('./components/EditState'), {
   ssr: false,
@@ -39,15 +40,16 @@ const actionBarHolder = (
   />
 );
 interface GroupMessageProps {
-  defaultWorkflowExpanded?: boolean;
+  defaultWorkflowExpandLevel?: WorkflowExpandLevelDefault;
   disableEditing?: boolean;
+  footerRender?: ReactNode;
   id: string;
   index: number;
   isLatestItem?: boolean;
 }
 
 const GroupMessage = memo<GroupMessageProps>(
-  ({ defaultWorkflowExpanded, id, index, disableEditing }) => {
+  ({ defaultWorkflowExpandLevel, id, index, disableEditing, footerRender }) => {
     // Get message and actionsConfig from ConversationStore
     const item = useConversationStore(dataSelectors.getDisplayMessageById(id), isEqual)!;
 
@@ -140,6 +142,7 @@ const GroupMessage = memo<GroupMessageProps>(
       <ChatItem
         showTitle
         avatar={avatar}
+        id={id}
         placement={'left'}
         time={createdAt}
         actions={
@@ -164,7 +167,7 @@ const GroupMessage = memo<GroupMessageProps>(
             blocks={children}
             content={lastAssistantMsg?.content}
             contentId={contentId}
-            defaultWorkflowExpanded={defaultWorkflowExpanded}
+            defaultWorkflowExpandLevel={defaultWorkflowExpandLevel}
             disableEditing={disableEditing}
             id={id}
             messageIndex={index}
@@ -176,6 +179,7 @@ const GroupMessage = memo<GroupMessageProps>(
           </div>
         )}
         {interrupted && <InterruptedHint />}
+        {footerRender}
         {isDevMode && model && (
           <Usage model={model} performance={performance} provider={provider!} usage={usage} />
         )}

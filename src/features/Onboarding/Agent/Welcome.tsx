@@ -7,11 +7,7 @@ import LobeMessage from '@/routes/onboarding/components/LobeMessage';
 
 import { staticStyle } from './staticStyle';
 
-interface WelcomeProps {
-  content: string;
-}
-
-const Welcome = memo<WelcomeProps>(({ content }) => {
+const Welcome = memo(() => {
   const { t } = useTranslation('onboarding');
 
   const guids = [
@@ -53,11 +49,10 @@ const Welcome = memo<WelcomeProps>(({ content }) => {
           ]}
         />
         <Divider dashed style={{ margin: 0 }} />
-        <Text italic style={{ marginBlock: 8 }} type={'secondary'}>
-          {t('agent.welcome.footer')}
-        </Text>
-        <Divider dashed style={{ margin: 0 }} />
-        <Grid paddingBlock={24}>
+        <Markdown fontSize={16} variant={'chat'}>
+          {t('agent.welcome')}
+        </Markdown>
+        <Grid>
           {guids.map((item, i) => (
             <Block
               shadow
@@ -79,9 +74,9 @@ const Welcome = memo<WelcomeProps>(({ content }) => {
             </Block>
           ))}
         </Grid>
-        <Markdown fontSize={16} variant={'chat'}>
-          {content}
-        </Markdown>
+        <Text italic style={{ marginBlock: 8 }} type={'secondary'}>
+          {t('agent.welcome.footer')}
+        </Text>
       </Flexbox>
     </>
   );
